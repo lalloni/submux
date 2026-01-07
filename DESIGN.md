@@ -164,6 +164,7 @@ Configured via functional options in `New()`:
     *   **Migration**: Trigger `CLUSTER SETSLOT` to move a slot. Verify `migration` signal is received.
     *   **Node Failures**: Stop a redis node. Verify `node_failure` signal.
     *   **Auto-Resubscribe**: Verify that after migration, subscriptions allow messages to flow again without user intervention.
+    *   **Chaos Testing**: Simulate random node failures and rolling restarts under load to ensure long-term stability using `resiliency_test.go`.
 
 
 ---

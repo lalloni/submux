@@ -11,7 +11,8 @@ The tests automatically spawn independent Redis clusters (using `redis-server`) 
 | `cluster_test.go` | **Basic Functionality** | Simple Subscribe/Publish, Connection reuse. |
 | `subscribe_test.go` | **Subscription Logic** | `PSUBSCRIBE`, `SSUBSCRIBE` (Sharded), multiple callbacks per channel. |
 | `topology_test.go` | **Resilience** | Hashslot migration, Node failure, Auto-resubscribe, Signal messages. |
-| `concurrency_test.go` | **Threa Safety** | Concurrent subscriptions, High-concurrency message processing. |
+| `resiliency_test.go` | **Advanced Resilience** | Replica failure, Rolling restarts, Chaos testing. |
+| `concurrency_test.go` | **Thread Safety** | Concurrent subscriptions, High-concurrency message processing. |
 | `load_test.go` | **Performance** | High throughput ingestion, Memory usage under load. |
 | `shared_cluster_test.go` | **Optimization** | Shared cluster infrastructure for faster parallel tests. |
 
