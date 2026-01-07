@@ -1,0 +1,79 @@
+package submux
+
+import "time"
+
+// MessageType represents the type of a message received from a subscription.
+type MessageType int
+
+const (
+	// MessageTypeMessage is a regular SUBSCRIBE message.
+	MessageTypeMessage MessageType = iota
+	// MessageTypePMessage is a pattern PSUBSCRIBE message.
+	MessageTypePMessage
+	// MessageTypeSMessage is a sharded SSUBSCRIBE message.
+	MessageTypeSMessage
+	// MessageTypeSignal is a signal notification (topology change).
+	MessageTypeSignal
+)
+
+// Message represents a message received from a subscription or a signal notification.
+type Message struct {
+	// Type indicates the message type.
+	Type MessageType
+
+	// Channel is the channel name (for regular messages).
+	Channel string
+
+	// Payload is the message payload.
+	Payload string
+
+	// Pattern is the pattern that matched (for PSUBSCRIBE/SSUBSCRIBE messages).
+	Pattern string
+
+	// Signal contains signal information (if Type is MessageTypeSignal).
+	Signal *SignalInfo
+
+	// Timestamp is when the message was received.
+	Timestamp time.Time
+}
+
+// SignalInfo contains information about cluster topology changes or hashslot migrations.
+type SignalInfo struct {
+	// EventType is the type of event: "migration", "topology_change", "node_failure".
+	EventType EventType
+
+	// Hashslot is the affected hashslot (0-16383).
+	Hashslot int
+
+	// OldNode is the previous node address (if applicable).
+	OldNode string
+
+	// NewNode is the new node address (if applicable).
+	NewNode string
+
+	// Details contains additional details about the event.
+	Details string
+}
+
+// EventType represents the type of a signal event.
+type EventType string
+
+// Event types for SignalInfo.
+const (
+	EventNodeFailure      EventType = "node_failure"
+	EventMigration        EventType = "migration"
+	EventMigrationTimeout EventType = "migration_timeout"
+	EventMigrationStalled EventType = "migration_stalled"
+)
+
+// MessageCallback is a function type for handling subscription events (messages and signal notifications).
+// Callbacks are invoked asynchronously in separate goroutines and must be thread-safe.
+type MessageCallback func(msg *Message)
+
+// Sub represents a subscription to one or more channels/patterns with a specific callback.
+// Sub is returned from SubscribeSync, PSubscribeSync, or SSubscribeSync and can be used
+// to unsubscribe the specific callback that was provided during subscription.
+type Sub struct {
+	subMux *SubMux
+	subs   []*subscription // Internal subscriptions created for this Subscription
+}
