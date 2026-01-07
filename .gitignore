@@ -1,0 +1,19 @@
+# Binaries
+*.test
+*.out
+
+# Logs
+*.log
+integration/logs/
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test Data
+integration/testdata/
