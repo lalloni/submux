@@ -60,11 +60,14 @@ func unregisterCluster(cluster *TestCluster) {
 // This is called when a signal is received.
 func cleanupAllClusters() {
 	activeClustersMu.Lock()
-	clusters := make([]*TestCluster, 0, len(activeClusters))
+	count := len(activeClusters)
+	clusters := make([]*TestCluster, 0, count)
 	for cluster := range activeClusters {
 		clusters = append(clusters, cluster)
 	}
 	activeClustersMu.Unlock()
+
+	fmt.Fprintf(os.Stderr, "cleanupAllClusters: found %d active clusters\n", count)
 
 	for _, cluster := range clusters {
 		fmt.Fprintf(os.Stderr, "Stopping cluster: %s\n", cluster.name)
@@ -346,11 +349,11 @@ func (tc *TestCluster) initializeCluster(ctx context.Context) error {
 // StopCluster stops all Redis processes and cleans up.
 // It ensures processes are forcefully terminated and waits for them to exit.
 func (tc *TestCluster) StopCluster(ctx context.Context) error {
-	// Unregister from signal handling first
-	unregisterCluster(tc)
-
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
+
+	// Ensure we unregister even if we fail partially
+	defer unregisterCluster(tc)
 
 	var firstErr error
 

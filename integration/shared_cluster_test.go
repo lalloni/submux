@@ -3,12 +3,10 @@ package integration
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 var (
@@ -64,28 +62,4 @@ func uniqueChannel(base string) string {
 	return fmt.Sprintf("%s-%d", base, id)
 }
 
-// TestMain sets up and tears down the shared cluster.
-// Signal handling for interruptions is now handled globally in cluster_setup.go.
-func TestMain(m *testing.M) {
-	fmt.Fprintln(os.Stderr, "=== TestMain starting ===")
-
-	// Run tests
-	exitCode := m.Run()
-
-	fmt.Fprintln(os.Stderr, "=== TestMain: tests completed, starting cleanup ===")
-
-	// Cleanup shared cluster - must happen before os.Exit
-	// (os.Exit does not run deferred functions)
-	if sharedCluster != nil {
-		fmt.Fprintln(os.Stderr, "Stopping shared cluster...")
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := sharedCluster.StopCluster(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "Error stopping shared cluster: %v\n", err)
-		} else {
-			fmt.Fprintln(os.Stderr, "Shared cluster stopped successfully")
-		}
-	}
-
-	os.Exit(exitCode)
-}
+// TestMain removed - moved to main_test.go for global package cleanup
