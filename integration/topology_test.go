@@ -240,9 +240,10 @@ func TestManualResubscribe(t *testing.T) {
 
 	// Define callback to reuse
 	callback := func(msg *submux.Message) {
-		if msg.Type == submux.MessageTypeMessage || msg.Type == submux.MessageTypeSMessage {
+		switch msg.Type {
+		case submux.MessageTypeMessage, submux.MessageTypeSMessage:
 			messages <- msg
-		} else if msg.Type == submux.MessageTypeSignal {
+		case submux.MessageTypeSignal:
 			signals <- msg
 		}
 	}
