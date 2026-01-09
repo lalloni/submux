@@ -67,8 +67,6 @@ func cleanupAllClusters() {
 	}
 	activeClustersMu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "cleanupAllClusters: found %d active clusters\n", count)
-
 	for _, cluster := range clusters {
 		fmt.Fprintf(os.Stderr, "Stopping cluster: %s\n", cluster.name)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
