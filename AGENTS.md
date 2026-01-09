@@ -64,3 +64,5 @@ This document provides a high-level overview of the **submux** project, designed
     *   **Markdown Files**: If you modify logic, you **MUST** update `DESIGN.md` and `README.md` immediately. Do not leave documentation drift.
     *   **Code Comments**: If you change code behavior, update the GoDoc comments above it. Inaccurate comments are worse than no comments.
     *   **CHANGELOG**: Add an entry to `CHANGELOG.md` for any notable change.
+5. **Always verify all tests pass after each change** including unit tests and integration tests.
+6. **Always apply Go style guidelines** and verify compliance using tools like `gofmt`, `golint`, `gosec` after every change.
