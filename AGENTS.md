@@ -33,9 +33,9 @@ This document provides a high-level overview of the **submux** project, designed
 
 ### 1. Integration Tests (`integration/`)
 *   **Requirement**: `redis-server` and `redis-cli` must be in `$PATH`.
-*   **Execution**: `go test ./integration/... -v -race`
+*   **Execution**: `go test ./integration/... -v -race -timeout=30s`
 *   **Mechanism**:
-    *   Spawns real Redis processes (9 nodes: 3 shards × 3 replicas).
+    *   Spawns real Redis processes.
     *   Uses **random ports** to avoid conflicts.
     *   **NO `time.Sleep`**: Tests use event polling (`Eventually`) or channel synchronization.
     *   **Debug**: Logs are captured. Use `go test -v` to see them.
@@ -48,7 +48,7 @@ This document provides a high-level overview of the **submux** project, designed
 ## 🛠️ Common Tasks
 
 ### How to...
-*   **Run all tests**: `go test ./... ./integration/... -v -race`
+*   **Run all tests**: `go test ./... -v -race -timeout=30s`
 *   **Add a new feature**:
     1.  Update `DESIGN.md` with the proposal.
     2.  Implement in a new file or existing component.

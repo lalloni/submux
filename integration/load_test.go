@@ -78,7 +78,6 @@ func TestHighSubscriptionCount(t *testing.T) {
 
 // TestHighSubscriptionCount_MemoryUsage tests memory usage with many subscriptions.
 func TestHighSubscriptionCount_MemoryUsage(t *testing.T) {
-	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping load test in short mode")
 	}
