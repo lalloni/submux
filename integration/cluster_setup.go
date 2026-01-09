@@ -91,14 +91,15 @@ func findAvailablePort() (int, error) {
 
 // TestCluster represents a local Redis Cluster for testing.
 type TestCluster struct {
-	name          string // Name used to identify this cluster
-	nodes         []*TestNode
-	processes     []*exec.Cmd
-	dataDirs      []string
-	testDataDir   string // Parent directory containing all node data dirs
-	numNodes      int
-	clusterClient *redis.ClusterClient
-	mu            sync.Mutex
+	name             string // Name used to identify this cluster
+	nodes            []*TestNode
+	processes        []*exec.Cmd
+	dataDirs         []string
+	testDataDir      string // Parent directory containing all node data dirs
+	numShards        int
+	replicasPerShard int
+	clusterClient    *redis.ClusterClient
+	mu               sync.Mutex
 }
 
 // TestNode represents a single Redis node in the test cluster.
@@ -108,17 +109,19 @@ type TestNode struct {
 	Address string
 }
 
-// StartCluster starts a local Redis Cluster with the specified number of nodes.
+// StartCluster starts a local Redis Cluster with the specified configuration.
 // Each node is assigned an available port dynamically.
 // The clusterName is used to identify the cluster in process listings and data directories.
-// For a proper cluster setup, use 9 nodes (3 shards × 3 nodes each: 1 master + 2 replicas per shard).
-func StartCluster(ctx context.Context, numNodes int, clusterName string) (*TestCluster, error) {
-	if numNodes < 3 {
-		return nil, fmt.Errorf("cluster requires at least 3 nodes, got %d", numNodes)
+// numShards specifies the number of shards (masters) in the cluster (minimum 3).
+// replicasPerShard specifies the number of replica nodes per shard (0 for masters only).
+func StartCluster(ctx context.Context, numShards, replicasPerShard int, clusterName string) (*TestCluster, error) {
+	if numShards < 3 {
+		return nil, fmt.Errorf("cluster requires at least 3 shards, got %d", numShards)
 	}
-	if numNodes%3 != 0 {
-		return nil, fmt.Errorf("cluster requires a multiple of 3 nodes (for shard setup), got %d", numNodes)
+	if replicasPerShard < 0 {
+		return nil, fmt.Errorf("replicasPerShard cannot be negative, got %d", replicasPerShard)
 	}
+	numNodes := numShards * (1 + replicasPerShard)
 	if clusterName == "" {
 		clusterName = fmt.Sprintf("cluster-%d", time.Now().UnixNano())
 	}
@@ -135,12 +138,13 @@ func StartCluster(ctx context.Context, numNodes int, clusterName string) (*TestC
 	}
 
 	cluster := &TestCluster{
-		name:        clusterName,
-		nodes:       make([]*TestNode, 0, numNodes),
-		processes:   make([]*exec.Cmd, 0, numNodes),
-		dataDirs:    make([]string, 0, numNodes),
-		testDataDir: testDataDir,
-		numNodes:    numNodes,
+		name:             clusterName,
+		nodes:            make([]*TestNode, 0, numNodes),
+		processes:        make([]*exec.Cmd, 0, numNodes),
+		dataDirs:         make([]string, 0, numNodes),
+		testDataDir:      testDataDir,
+		numShards:        numShards,
+		replicasPerShard: replicasPerShard,
 	}
 
 	// Start Redis instances
@@ -284,15 +288,8 @@ func (tc *TestCluster) initializeCluster(ctx context.Context) error {
 		args = append(args, node.Address)
 	}
 
-	// Calculate number of replicas per master
-	// For 3 nodes: 3 masters, 0 replicas = --cluster-replicas 0
-	// For 6 nodes: 3 masters, 1 replica per master = --cluster-replicas 1
-	// For 9 nodes: 3 masters, 2 replicas per master = --cluster-replicas 2
-	// For N nodes: always use 3 masters, rest are replicas
-	numMasters := 3
-	replicasPerMaster := (tc.numNodes - numMasters) / numMasters
-
-	args = append(args, "--cluster-replicas", strconv.Itoa(replicasPerMaster), "--cluster-yes")
+	// Use the configured replicas per shard
+	args = append(args, "--cluster-replicas", strconv.Itoa(tc.replicasPerShard), "--cluster-yes")
 
 	cmd := exec.CommandContext(ctx, "redis-cli", args...)
 	output, err := cmd.CombinedOutput()
@@ -776,9 +773,10 @@ func WaitForClusterReady(client *redis.ClusterClient, timeout time.Duration) err
 
 // setupTestCluster is a helper function for tests to set up a cluster.
 // It fails the test if redis-server or redis-cli are not available.
-// By default, it creates a cluster with 9 nodes (3 shards × 3 nodes: 1 master + 2 replicas per shard).
-// Pass numNodes to override (must be a multiple of 3).
-func setupTestCluster(t testing.TB, numNodes int) *TestCluster {
+// numShards specifies the number of shards (masters) in the cluster (minimum 3).
+// replicasPerShard specifies the number of replica nodes per shard (0 for masters only).
+// Use 0 for both parameters to get the default (3 shards, 2 replicas per shard = 9 nodes).
+func setupTestCluster(t testing.TB, numShards, replicasPerShard int) *TestCluster {
 	// Check if redis-server and redis-cli are available
 	if _, err := exec.LookPath("redis-server"); err != nil {
 		t.Fatalf("redis-server not found in PATH: %v", err)
@@ -787,16 +785,19 @@ func setupTestCluster(t testing.TB, numNodes int) *TestCluster {
 		t.Fatalf("redis-cli not found in PATH: %v", err)
 	}
 
-	// Default to 9 nodes (3 shards with 1 master + 2 replicas each)
-	if numNodes == 0 {
-		numNodes = 9
+	// Default to 3 shards with 2 replicas each (9 nodes total)
+	if numShards == 0 {
+		numShards = 3
+	}
+	if replicasPerShard == 0 && numShards == 3 {
+		replicasPerShard = 2
 	}
 
 	// Generate a cluster name based on test name for easy identification
 	clusterName := fmt.Sprintf("test-%s-%d", t.Name(), time.Now().UnixNano())
 
 	ctx := context.Background()
-	cluster, err := StartCluster(ctx, numNodes, clusterName)
+	cluster, err := StartCluster(ctx, numShards, replicasPerShard, clusterName)
 	if err != nil {
 		t.Fatalf("Failed to start test cluster: %v", err)
 	}

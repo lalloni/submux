@@ -17,7 +17,7 @@ import (
 // Note: This test runs sequentially (no t.Parallel()) to ensure reliable timing.
 func TestHashslotMigration(t *testing.T) {
 	// Use dedicated cluster to avoid interference from concurrent migrations
-	cluster := setupTestCluster(t, 3)
+	cluster := setupTestCluster(t, 3, 2)
 	client := cluster.GetClusterClient()
 
 	subMux, err := submux.New(client,
@@ -115,7 +115,7 @@ func TestHashslotMigration(t *testing.T) {
 // Note: This test runs sequentially (no t.Parallel()) to ensure reliable timing.
 func TestAutoResubscribe(t *testing.T) {
 	// Use dedicated cluster to avoid interference from concurrent migrations
-	cluster := setupTestCluster(t, 3)
+	cluster := setupTestCluster(t, 3, 2)
 	client := cluster.GetClusterClient()
 
 	subMux, err := submux.New(client,
@@ -222,7 +222,7 @@ func TestAutoResubscribe(t *testing.T) {
 // Note: This test runs sequentially (no t.Parallel()) to ensure reliable timing.
 func TestManualResubscribe(t *testing.T) {
 	// Use dedicated cluster to avoid interference from concurrent migrations
-	cluster := setupTestCluster(t, 3)
+	cluster := setupTestCluster(t, 3, 2)
 	client := cluster.GetClusterClient()
 
 	subMux, err := submux.New(client,
@@ -362,7 +362,7 @@ func TestManualResubscribe(t *testing.T) {
 func TestNodeFailure_SubscriptionContinuation(t *testing.T) {
 	t.Parallel()
 	// Need at least 3 shards with replicas to survive a master failure
-	cluster := setupTestCluster(t, 6)
+	cluster := setupTestCluster(t, 3, 2)
 	client := cluster.GetClusterClient()
 
 	subMux, err := submux.New(client,

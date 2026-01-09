@@ -74,7 +74,7 @@ func (tc *TestCluster) StartNode(ctx context.Context, nodeAddr string) error {
 func TestReplicaFailure_Recovery(t *testing.T) {
 	t.Parallel()
 	// Use 6 nodes (3 shards: 1 master + 1 replica each) which is enough for replica failure test
-	cluster := setupTestCluster(t, 6)
+	cluster := setupTestCluster(t, 3, 2)
 	client := cluster.GetClusterClient()
 
 	// Configure SubMux to prefer replicas
@@ -224,7 +224,7 @@ RecoveryLoop:
 
 func TestRollingRestart_Stability(t *testing.T) {
 	t.Parallel()
-	cluster := setupTestCluster(t, 6)
+	cluster := setupTestCluster(t, 3, 2)
 	client := cluster.GetClusterClient()
 
 	subMux, err := submux.New(client,

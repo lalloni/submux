@@ -32,10 +32,10 @@ func getSharedCluster(t testing.TB) *TestCluster {
 			return
 		}
 
-		// Create a 3-node cluster (3 shards × 1 node: 3 masters + 0 replicas)
+		// Create a 9-node cluster (3 shards × 3 nodes: 1 master + 2 replicas per shard)
 		ctx := context.Background()
 
-		cluster, err := StartCluster(ctx, 3, "shared-cluster")
+		cluster, err := StartCluster(ctx, 3, 2, "shared-cluster")
 		if err != nil {
 			sharedClusterErr = err
 			return
