@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -177,7 +178,7 @@ func StartCluster(ctx context.Context, numShards, replicasPerShard int, clusterN
 		config := fmt.Sprintf(`port %d
 cluster-enabled yes
 cluster-config-file nodes.conf
-cluster-node-timeout 2000
+cluster-node-timeout 1000
 cluster-replica-validity-factor 0
 appendonly yes
 dir %s
@@ -241,39 +242,47 @@ dir %s
 	return cluster, nil
 }
 
-// waitForNodesReady waits for all Redis nodes to be ready.
+// waitForNodesReady waits for all Redis nodes to be ready in parallel.
 func (tc *TestCluster) waitForNodesReady(ctx context.Context, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Check all nodes in parallel
+	errChan := make(chan error, len(tc.nodes))
 
 	for _, node := range tc.nodes {
-		for time.Now().Before(deadline) {
-			// Try to connect to this node
-			client := redis.NewClient(&redis.Options{
-				Addr: node.Address,
-			})
+		go func(nodeAddr string) {
+			ticker := time.NewTicker(50 * time.Millisecond)
+			defer ticker.Stop()
 
-			if err := client.Ping(ctx).Err(); err == nil {
+			for {
+				client := redis.NewClient(&redis.Options{
+					Addr: nodeAddr,
+				})
+
+				if err := client.Ping(ctx).Err(); err == nil {
+					client.Close()
+					errChan <- nil
+					return
+				}
 				client.Close()
-				break
-			}
-			client.Close()
 
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(100 * time.Millisecond):
+				select {
+				case <-ctx.Done():
+					errChan <- fmt.Errorf("node %s not ready: %w", nodeAddr, ctx.Err())
+					return
+				case <-ticker.C:
+					// Continue polling
+				}
 			}
-		}
+		}(node.Address)
+	}
 
-		// Final check
-		client := redis.NewClient(&redis.Options{
-			Addr: node.Address,
-		})
-		if err := client.Ping(ctx).Err(); err != nil {
-			client.Close()
-			return fmt.Errorf("node %s not ready: %w", node.Address, err)
+	// Wait for all goroutines to complete
+	for range tc.nodes {
+		if err := <-errChan; err != nil {
+			return err
 		}
-		client.Close()
 	}
 
 	return nil
@@ -302,26 +311,33 @@ func (tc *TestCluster) initializeCluster(ctx context.Context) error {
 
 	// Wait for cluster to stabilize - poll until all nodes are connected
 	// and cluster state is ok
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	ticker := time.NewTicker(200 * time.Millisecond)
+	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
-		// Check if all nodes are reachable
-		allReady := true
-		for _, node := range tc.nodes {
-			client := redis.NewClient(&redis.Options{
-				Addr: node.Address,
-			})
-			if err := client.Ping(ctxWithTimeout).Err(); err != nil {
-				allReady = false
-			}
-			client.Close()
-		}
+		// Check if all nodes are reachable in parallel
+		var wg sync.WaitGroup
+		var notReady atomic.Bool
 
-		if allReady {
+		for _, node := range tc.nodes {
+			wg.Add(1)
+			go func(addr string) {
+				defer wg.Done()
+				client := redis.NewClient(&redis.Options{
+					Addr: addr,
+				})
+				defer client.Close()
+				if err := client.Ping(ctxWithTimeout).Err(); err != nil {
+					notReady.Store(true)
+				}
+			}(node.Address)
+		}
+		wg.Wait()
+
+		if !notReady.Load() {
 			// Verify cluster info shows cluster is ok
 			client := redis.NewClient(&redis.Options{
 				Addr: tc.nodes[0].Address,
