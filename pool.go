@@ -8,6 +8,23 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// connectionState represents the state of a connection.
+type connectionState int
+
+const (
+	connStateActive connectionState = iota
+	connStateFailed
+	connStateClosed
+)
+
+// command represents a command to be sent to Redis.
+type command struct {
+	cmd      string
+	args     []any
+	sub      *subscription
+	response chan error
+}
+
 // pubSubMetadata holds metadata for a PubSub connection.
 type pubSubMetadata struct {
 	// pubsub is the PubSub connection.
@@ -166,6 +183,9 @@ type pubSubPool struct {
 	// config holds the configuration.
 	config *config
 
+	// topologyMonitor provides robust topology information.
+	topologyMonitor *topologyMonitor
+
 	// nodePubSubs maps node address to list of PubSub connections.
 	nodePubSubs map[string][]*redis.PubSub
 
@@ -190,9 +210,26 @@ func newPubSubPool(clusterClient *redis.ClusterClient, config *config) *pubSubPo
 	}
 }
 
+// setTopologyMonitor sets the topology monitor.
+func (p *pubSubPool) setTopologyMonitor(tm *topologyMonitor) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.topologyMonitor = tm
+}
+
+// getKeyForSlot returns a key that hashes to the given slot.
+func getKeyForSlot(slot int) string {
+	for i := 0; ; i++ {
+		key := fmt.Sprintf("{%d}", i)
+		if Hashslot(key) == slot {
+			return key
+		}
+	}
+}
+
 // getPubSubForHashslot returns a PubSub connection for the given hashslot.
 // It selects the least-loaded PubSub from available connections.
-func (p *pubSubPool) getPubSubForHashslot(ctx context.Context, hashslot int) (*redis.PubSub, error) {
+func (p *pubSubPool) getPubSubForHashslot(ctx context.Context, hashslot int, initialChannel string) (*redis.PubSub, error) {
 	p.mu.RLock()
 	pubsubs := p.hashslotPubSubs[hashslot]
 	p.mu.RUnlock()
@@ -220,11 +257,11 @@ func (p *pubSubPool) getPubSubForHashslot(ctx context.Context, hashslot int) (*r
 	}
 
 	// No PubSub available, need to create one
-	return p.createPubSubForHashslot(ctx, hashslot)
+	return p.createPubSubForHashslot(ctx, hashslot, initialChannel)
 }
 
 // createPubSubForHashslot creates a new PubSub connection for the given hashslot.
-func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int) (*redis.PubSub, error) {
+func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int, initialChannel string) (*redis.PubSub, error) {
 	// Get node information for this hashslot from cluster topology
 	nodeAddr, err := p.getNodeForHashslot(ctx, hashslot)
 	if err != nil {
@@ -277,11 +314,34 @@ func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int) 
 }
 
 // createPubSubToNode creates a new PubSub connection to a specific node.
-// It uses the ClusterClient's Subscribe method to create a PubSub connection.
+// It routes the request through the ClusterClient using a probe channel that hashes
+// to a slot owned by the target node (per submux's topology monitor), ensuring the
+// connection lands on the right node even if go-redis has stale routing info.
+//
+// NOTE: We intentionally do NOT use initialChannel for routing here. During migrations,
+// go-redis's ClusterClient may have stale topology and would route initialChannel to
+// the OLD node. By using getAnySlotForNode from our own topology monitor, we guarantee
+// the connection goes to the correct new node.
 func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*redis.PubSub, error) {
-	// Create a PubSub connection using ClusterClient's Subscribe method
-	// We start with an empty subscription - channels will be added via command sender
-	pubsub := p.clusterClient.Subscribe(ctx)
+	// Find a slot owned by the target node using our topology monitor
+	p.mu.RLock()
+	tm := p.topologyMonitor
+	p.mu.RUnlock()
+
+	if tm == nil {
+		return nil, fmt.Errorf("topology monitor not initialized")
+	}
+
+	slot, ok := tm.getAnySlotForNode(nodeAddr)
+	if !ok {
+		return nil, fmt.Errorf("node %s not found in topology or owns no slots", nodeAddr)
+	}
+
+	// Generate a probe channel that hashes to this slot to force connection to this node
+	key := getKeyForSlot(slot)
+	channel := fmt.Sprintf("__submux_probe__:%s", key)
+
+	pubsub := p.clusterClient.Subscribe(ctx, channel)
 
 	// Create metadata for this PubSub
 	meta := &pubSubMetadata{
@@ -317,11 +377,28 @@ func (p *pubSubPool) getMetadata(pubsub *redis.PubSub) *pubSubMetadata {
 // It first tries to get it from the topology monitor if available, otherwise falls back to querying ClusterClient.
 func (p *pubSubPool) getNodeForHashslot(ctx context.Context, hashslot int) (string, error) {
 	// Try to get from topology monitor first (if available)
-	// Note: This requires access to SubMux, which we don't have here.
-	// For now, fall back to querying ClusterClient directly.
-	// In the future, we could pass topologyMonitor reference to pool.
+	p.mu.RLock()
+	tm := p.topologyMonitor
+	p.mu.RUnlock()
 
-	// Use ClusterClient to get cluster slots
+	if tm != nil {
+		if node, ok := tm.getNodeForHashslot(hashslot); ok {
+			return node, nil
+		}
+
+		// If not found in monitor, try to force a refresh
+		// Using the private refreshTopology method which we can access since we are in the same package
+		// We ignore error here as we check the result again
+		_ = tm.refreshTopology()
+
+		// Check again
+		if node, ok := tm.getNodeForHashslot(hashslot); ok {
+			return node, nil
+		}
+	}
+
+	// Fallback to cluster client if monitor is not available or still fails
+	// Note: If tm fallback failed, clusterClient is likely broken too, but we try anyway
 	slots, err := p.clusterClient.ClusterSlots(ctx).Result()
 	if err != nil {
 		return "", fmt.Errorf("failed to get cluster slots: %w", err)

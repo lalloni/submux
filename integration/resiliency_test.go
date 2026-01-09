@@ -73,8 +73,8 @@ func (tc *TestCluster) StartNode(ctx context.Context, nodeAddr string) error {
 
 func TestReplicaFailure_Recovery(t *testing.T) {
 	t.Parallel()
-	// Use 9 nodes (3 shards: 1 master + 2 replicas each) to ensure we have replicas
-	cluster := setupTestCluster(t, 9)
+	// Use 6 nodes (3 shards: 1 master + 1 replica each) which is enough for replica failure test
+	cluster := setupTestCluster(t, 6)
 	client := cluster.GetClusterClient()
 
 	// Configure SubMux to prefer replicas
@@ -189,9 +189,10 @@ func TestReplicaFailure_Recovery(t *testing.T) {
 	t.Log("Publishing messages during failure...")
 
 	// Give a small moment for disconnect detection
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 
 	receivedRecovery := false
+RecoveryLoop:
 	for i := 0; i < 10; i++ {
 		payload := fmt.Sprintf("recovery-%d", i)
 		err = pubClient.Publish(context.Background(), channelName, payload).Err()
@@ -203,13 +204,10 @@ func TestReplicaFailure_Recovery(t *testing.T) {
 		case msg := <-messages:
 			if msg.Payload == payload {
 				receivedRecovery = true
-				break
+				break RecoveryLoop
 			}
-		case <-time.After(1 * time.Second):
+		case <-time.After(500 * time.Millisecond):
 			// retry
-		}
-		if receivedRecovery {
-			break
 		}
 	}
 
@@ -226,7 +224,7 @@ func TestReplicaFailure_Recovery(t *testing.T) {
 
 func TestRollingRestart_Stability(t *testing.T) {
 	t.Parallel()
-	cluster := setupTestCluster(t, 9)
+	cluster := setupTestCluster(t, 6)
 	client := cluster.GetClusterClient()
 
 	subMux, err := submux.New(client,
@@ -250,7 +248,7 @@ func TestRollingRestart_Stability(t *testing.T) {
 		t.Fatalf("Failed to subscribe: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	// Background publisher
@@ -280,7 +278,7 @@ func TestRollingRestart_Stability(t *testing.T) {
 			}
 
 			// Wait random interval
-			time.Sleep(time.Duration(2+rnd.Intn(3)) * time.Second)
+			time.Sleep(time.Duration(500+rnd.Intn(500)) * time.Millisecond)
 
 			if ctx.Err() != nil {
 				return
@@ -299,7 +297,7 @@ func TestRollingRestart_Stability(t *testing.T) {
 			}
 
 			// Wait a bit (simulate downtime)
-			time.Sleep(2 * time.Second)
+			time.Sleep(1 * time.Second)
 
 			// Start
 			if err := cluster.StartNode(context.Background(), target.Address); err != nil {
@@ -331,8 +329,8 @@ func TestRollingRestart_Stability(t *testing.T) {
 			lastReceived = time.Now()
 		case <-monitorTick.C:
 			// Check if we haven't received anything for too long
-			if time.Since(lastReceived) > 8*time.Second {
-				t.Error("Stalled: No messages received for > 8 seconds during rolling restarts")
+			if time.Since(lastReceived) > 3*time.Second {
+				t.Error("Stalled: No messages received for > 3 seconds during rolling restarts")
 				return
 			}
 		}

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -49,6 +51,7 @@ func (ts *topologyState) update(slots []redis.ClusterSlot) {
 			continue
 		}
 		masterAddr := slot.Nodes[0].Addr
+		log.Printf("DEBUG: slot %d-%d master: %s, nodes: %v", slot.Start, slot.End, masterAddr, slot.Nodes)
 
 		// Map all hashslots in this range to the master node
 		for hashslot := int(slot.Start); hashslot <= int(slot.End); hashslot++ {
@@ -68,11 +71,36 @@ func (ts *topologyState) getNodeForHashslot(hashslot int) (string, bool) {
 
 // getNodeForHashslot returns the node address that owns the given hashslot from the topology monitor.
 func (tm *topologyMonitor) getNodeForHashslot(hashslot int) (string, bool) {
-	tm.currentState.mu.RLock()
-	defer tm.currentState.mu.RUnlock()
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if tm.currentState == nil {
+		return "", false
+	}
 	return tm.currentState.getNodeForHashslot(hashslot)
 }
 
+// getAnySlotForNode returns any hashslot owned by the given node.
+func (ts *topologyState) getAnySlotForNode(nodeAddr string) (int, bool) {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	slots, ok := ts.nodeToHashslots[nodeAddr]
+	if !ok || len(slots) == 0 {
+		return 0, false
+	}
+	return slots[0], true
+}
+
+// getAnySlotForNode returns any hashslot owned by the given node from the topology monitor.
+func (tm *topologyMonitor) getAnySlotForNode(nodeAddr string) (int, bool) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if tm.currentState == nil {
+		return 0, false
+	}
+	return tm.currentState.getAnySlotForNode(nodeAddr)
+}
+
+// compareAndDetectChanges compares the current topology with a previous state and returns detected migrations.
 // compareAndDetectChanges compares the current topology with a previous state and returns detected migrations.
 func (ts *topologyState) compareAndDetectChanges(previous *topologyState) []hashslotMigration {
 	ts.mu.RLock()
@@ -82,15 +110,28 @@ func (ts *topologyState) compareAndDetectChanges(previous *topologyState) []hash
 
 	var migrations []hashslotMigration
 
-	// Check for hashslot migrations
+	// Check for modified or new slots
 	for hashslot, currentNode := range ts.hashslotToNode {
 		previousNode, existed := previous.hashslotToNode[hashslot]
-		if existed && previousNode != currentNode {
-			// Hashslot has migrated
+		if !existed || previousNode != currentNode {
+			// Hashslot has migrated (or appeared)
+			migrations = append(migrations, hashslotMigration{
+				hashslot: hashslot,
+				oldNode:  previousNode, // will be empty string if !existed
+				newNode:  currentNode,
+			})
+		}
+	}
+
+	// Check for removed slots
+	for hashslot, previousNode := range previous.hashslotToNode {
+		_, existed := ts.hashslotToNode[hashslot]
+		if !existed {
+			// Hashslot has disappeared
 			migrations = append(migrations, hashslotMigration{
 				hashslot: hashslot,
 				oldNode:  previousNode,
-				newNode:  currentNode,
+				newNode:  "", // empty string indicates missing/unassigned
 			})
 		}
 	}
@@ -122,6 +163,9 @@ type topologyMonitor struct {
 
 	// pollInterval is how often to poll the topology.
 	pollInterval time.Duration
+
+	// mu protects currentState and concurrent access to refreshTopology
+	mu sync.Mutex
 }
 
 // newTopologyMonitor creates a new topology monitor.
@@ -162,11 +206,8 @@ func (tm *topologyMonitor) monitor() {
 		select {
 		case <-ticker.C:
 			if err := tm.refreshTopology(); err != nil {
-				// Log error but continue monitoring (cluster might be temporarily unavailable)
-				// Only log if it's not a connection error (to reduce noise)
-				if !isConnectionError(err) {
-					log.Printf("submux: topology refresh failed: %v", err)
-				}
+				// Log all errors for debugging
+				log.Printf("submux: topology refresh failed: %v", err)
 			}
 		case <-tm.done:
 			return
@@ -212,6 +253,9 @@ func isConnectionError(err error) bool {
 // It first calls ReloadState() to update the ClusterClient's internal state,
 // then fetches ClusterSlots() to get the slot information for comparison.
 func (tm *topologyMonitor) refreshTopology() error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
 	ctx := context.Background()
 
 	// First, reload the ClusterClient's internal state to ensure it's up to date
@@ -221,9 +265,75 @@ func (tm *topologyMonitor) refreshTopology() error {
 	tm.clusterClient.ReloadState(ctx)
 
 	// Get cluster slots information for topology comparison
-	slots, err := tm.clusterClient.ClusterSlots(ctx).Result()
+	var slots []redis.ClusterSlot
+	var err error
+
+	// Try main client first
+	slots, err = tm.clusterClient.ClusterSlots(ctx).Result()
 	if err != nil {
-		return fmt.Errorf("failed to get cluster slots: %w", err)
+		// Log the error
+		log.Printf("submux: main client ClusterSlots failed: %v", err)
+
+		// Fallback: try to contact seed nodes directly
+		// This handles cases where the main client's view of the cluster is stale or stuck on a dead node
+		opts := tm.clusterClient.Options()
+
+		// Shuffle addresses to avoid getting stuck on a bad seed node
+		addrs := make([]string, len(opts.Addrs))
+		copy(addrs, opts.Addrs)
+		rand.Shuffle(len(addrs), func(i, j int) {
+			addrs[i], addrs[j] = addrs[j], addrs[i]
+		})
+
+		for _, addr := range addrs {
+			// Create a temporary client for this node
+			// Copy relevant options
+			nodeOpts := &redis.Options{
+				Addr:                  addr,
+				ClientName:            opts.ClientName,
+				Dialer:                opts.Dialer,
+				OnConnect:             opts.OnConnect,
+				Username:              opts.Username,
+				Password:              opts.Password,
+				ContextTimeoutEnabled: opts.ContextTimeoutEnabled,
+				PoolSize:              1, // We only need one connection
+				MinIdleConns:          0,
+				MaxRetries:            1,
+				DialTimeout:           1 * time.Second,
+				ReadTimeout:           1 * time.Second,
+				WriteTimeout:          1 * time.Second,
+				TLSConfig:             opts.TLSConfig,
+			}
+
+			nodeClient := redis.NewClient(nodeOpts)
+
+			// Try to get slots from this node
+			// We use a short timeout context
+			nodeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+
+			// Check cluster state first
+			info, infoErr := nodeClient.ClusterInfo(nodeCtx).Result()
+			if infoErr != nil || !strings.Contains(info, "cluster_state:ok") {
+				cancel()
+				nodeClient.Close()
+				continue
+			}
+
+			nodeSlots, nodeErr := nodeClient.ClusterSlots(nodeCtx).Result()
+			cancel()
+			nodeClient.Close()
+
+			if nodeErr == nil {
+				log.Printf("submux: successfully recovered topology from seed node %s", addr)
+				slots = nodeSlots
+				err = nil
+				break
+			}
+		}
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to get cluster slots (tried main client and seed nodes): %w", err)
 	}
 
 	// Create new state from current topology
@@ -239,6 +349,10 @@ func (tm *topologyMonitor) refreshTopology() error {
 
 	// Handle detected migrations
 	if len(migrations) > 0 {
+		log.Printf("submux: detected %d migrations", len(migrations))
+		for _, m := range migrations {
+			log.Printf("submux: migration: slot %d from %s to %s", m.hashslot, m.oldNode, m.newNode)
+		}
 		tm.handleMigrations(migrations)
 	}
 
@@ -470,7 +584,7 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 			// Recreate subscriptions on new node
 			// Get new PubSub for the hashslot (will use new node)
 			ctx := context.Background()
-			newPubsub, err := tm.subMux.pool.getPubSubForHashslot(ctx, migration.hashslot)
+			newPubsub, err := tm.subMux.pool.getPubSubForHashslot(ctx, migration.hashslot, channel)
 			if err != nil {
 				// Log error and continue with other subscriptions
 				log.Printf("submux: failed to get PubSub for migrated hashslot %d: %v", migration.hashslot, err)
@@ -504,77 +618,55 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 				// Re-register subscription in metadata
 				meta.addSubscription(sub)
 
+				// Determine command name based on subscription type
+				var cmdName string
+				switch subType {
+				case subTypeSubscribe:
+					cmdName = cmdSubscribe
+				case subTypePSubscribe:
+					cmdName = cmdPSubscribe
+				case subTypeSSubscribe:
+					cmdName = cmdSSubscribe
+				}
+
 				// Check if channel is already subscribed on new PubSub
+				// existingSubs now includes the one we just added, so count should be >= 1
 				existingSubs := meta.getSubscriptions(channel)
-				isFirstOnNewPubSub := len(existingSubs) == 1 // Only our subscription
+				isFirstOnNewPubSub := len(existingSubs) == 1
 
 				if isFirstOnNewPubSub {
-					// Need to send SUBSCRIBE command
-					var cmdName string
-					switch subType {
-					case subTypeSubscribe:
-						cmdName = cmdSubscribe
-					case subTypePSubscribe:
-						cmdName = cmdPSubscribe
-					case subTypeSSubscribe:
-						cmdName = cmdSSubscribe
-					}
-
 					// Mark as pending
 					sub.setState(subStatePending, nil)
 					meta.addPendingSubscription(sub)
 
-					// Send subscription command
-					cmd := &command{
-						cmd:      cmdName,
-						args:     []any{channel},
-						sub:      sub,
-						response: make(chan error, 1),
-					}
-
-					if err := meta.sendCommand(ctx, cmd); err != nil {
-						meta.removePendingSubscription(channel)
-						sub.setState(subStateFailed, err)
-						processedCount++
-						if progressCh != nil {
-							select {
-							case progressCh <- processedCount:
-							default:
-							}
+					// Send subscription command asynchronously to avoid blocking topology monitor
+					go func(s *subscription, cName string, chName string, m *pubSubMetadata) {
+						cmd := &command{
+							cmd:      cName,
+							args:     []any{chName},
+							sub:      s,
+							response: make(chan error, 1),
 						}
-						continue
-					}
 
-					// Wait for confirmation (with timeout)
-					confirmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-					if err := sub.waitForConfirmation(confirmCtx); err != nil {
-						cancel()
-						meta.removePendingSubscription(channel)
-						sub.setState(subStateFailed, err)
-						processedCount++
-						if progressCh != nil {
-							select {
-							case progressCh <- processedCount:
-							default:
-							}
-						}
-						continue
-					}
-					cancel()
+						// Use a separate context for the command
+						cmdCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+						defer cancel()
 
-					// Check if subscription is in failed state
-					if sub.getState() == subStateFailed {
-						processedCount++
-						if progressCh != nil {
-							select {
-							case progressCh <- processedCount:
-							default:
-							}
+						if err := m.sendCommand(cmdCtx, cmd); err != nil {
+							log.Printf("submux: failed to send resubscribe command for %s: %v", chName, err)
+							m.removePendingSubscription(chName)
+							s.setState(subStateFailed, err)
+							return
 						}
-						continue
-					}
+
+						if err := s.waitForConfirmation(cmdCtx); err != nil {
+							log.Printf("submux: resubscribe confirmation failed for %s: %v", chName, err)
+							// Cleanup handled by waitForConfirmation/eventLoop usually, but ensure consistency
+							s.setState(subStateFailed, err)
+						}
+					}(sub, cmdName, channel, meta)
 				} else {
-					// Already subscribed on new PubSub, mark as active
+					// Channel is already active on this connection
 					sub.setState(subStateActive, nil)
 				}
 

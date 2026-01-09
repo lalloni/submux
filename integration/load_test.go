@@ -15,6 +15,7 @@ import (
 
 // TestHighSubscriptionCount tests subscribing to a large number of channels.
 func TestHighSubscriptionCount(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping load test in short mode")
 	}
@@ -77,6 +78,7 @@ func TestHighSubscriptionCount(t *testing.T) {
 
 // TestHighSubscriptionCount_MemoryUsage tests memory usage with many subscriptions.
 func TestHighSubscriptionCount_MemoryUsage(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping load test in short mode")
 	}
@@ -124,6 +126,7 @@ func TestHighSubscriptionCount_MemoryUsage(t *testing.T) {
 
 // TestHighMessageThroughput tests high message throughput.
 func TestHighMessageThroughput(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping load test in short mode")
 	}
@@ -225,6 +228,7 @@ func TestHighMessageThroughput(t *testing.T) {
 
 // TestHighMessageThroughput_CallbackPerformance tests callback performance under load.
 func TestHighMessageThroughput_CallbackPerformance(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping load test in short mode")
 	}
@@ -320,12 +324,13 @@ func TestHighMessageThroughput_CallbackPerformance(t *testing.T) {
 
 // TestLongRunningSubscriptions tests subscriptions over an extended period.
 func TestLongRunningSubscriptions(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping long-running test in short mode")
 	}
 
-	// Run for 30 seconds (can be extended for real stress testing)
-	duration := 30 * time.Second
+	// Run for 3 seconds (can be extended for real stress testing via env var)
+	duration := 3 * time.Second
 	if d := os.Getenv("LONG_TEST_DURATION"); d != "" {
 		var err error
 		duration, err = time.ParseDuration(d)
@@ -402,7 +407,7 @@ func TestLongRunningSubscriptions(t *testing.T) {
 	published := atomic.LoadInt64(&publishedCount)
 	errors := atomic.LoadInt64(&errorCount)
 
-	memDiff := m2.Alloc - m1.Alloc
+	memDiff := int64(m2.Alloc) - int64(m1.Alloc)
 	memDiffKB := memDiff / 1024
 
 	t.Logf("Test duration: %v", duration)

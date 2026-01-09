@@ -14,10 +14,10 @@ import (
 
 // TestHashslotMigration verifies that we can detect hashslot migration signals.
 // Use auto-resubscribe = false to verify the signal mechanism in isolation.
+// Note: This test runs sequentially (no t.Parallel()) to ensure reliable timing.
 func TestHashslotMigration(t *testing.T) {
-	t.Parallel()
-	// Use isolated cluster to avoid interfering with other tests
-	cluster := setupTestCluster(t, 6)
+	// Use dedicated cluster to avoid interference from concurrent migrations
+	cluster := setupTestCluster(t, 3)
 	client := cluster.GetClusterClient()
 
 	subMux, err := submux.New(client,
@@ -34,7 +34,7 @@ func TestHashslotMigration(t *testing.T) {
 	messages := make(chan *submux.Message, 10)
 	signalMessages := make(chan *submux.Message, 10)
 
-	channelName := "migrate-test"
+	channelName := uniqueChannel("migrate-test")
 	_, err = subMux.SSubscribeSync(context.Background(), []string{channelName}, func(msg *submux.Message) {
 		if msg.Type == submux.MessageTypeSignal {
 			signalMessages <- msg
@@ -107,14 +107,15 @@ func TestHashslotMigration(t *testing.T) {
 		if sig.Signal.NewNode != targetNode {
 			t.Errorf("Expected new node %q, got %q", targetNode, sig.Signal.NewNode)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Timeout waiting for migration signal")
 	}
 }
 
+// Note: This test runs sequentially (no t.Parallel()) to ensure reliable timing.
 func TestAutoResubscribe(t *testing.T) {
-	t.Parallel()
-	cluster := setupTestCluster(t, 6)
+	// Use dedicated cluster to avoid interference from concurrent migrations
+	cluster := setupTestCluster(t, 3)
 	client := cluster.GetClusterClient()
 
 	subMux, err := submux.New(client,
@@ -126,7 +127,7 @@ func TestAutoResubscribe(t *testing.T) {
 	}
 	defer subMux.Close()
 
-	channelName := "auto-resub-test"
+	channelName := uniqueChannel("auto-resub-test")
 	messages := make(chan *submux.Message, 10)
 
 	_, err = subMux.SSubscribeSync(context.Background(), []string{channelName}, func(msg *submux.Message) {
@@ -179,7 +180,7 @@ func TestAutoResubscribe(t *testing.T) {
 	}
 
 	// Wait a bit for migration detection and resubscription
-	time.Sleep(1 * time.Second)
+	time.Sleep(500 * time.Millisecond)
 
 	// Reload state to ensure client knows about new topology for correct routing
 	client.ReloadState(context.Background())
@@ -189,7 +190,7 @@ func TestAutoResubscribe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	var received bool
@@ -218,9 +219,10 @@ func TestAutoResubscribe(t *testing.T) {
 	}
 }
 
+// Note: This test runs sequentially (no t.Parallel()) to ensure reliable timing.
 func TestManualResubscribe(t *testing.T) {
-	t.Parallel()
-	cluster := setupTestCluster(t, 6)
+	// Use dedicated cluster to avoid interference from concurrent migrations
+	cluster := setupTestCluster(t, 3)
 	client := cluster.GetClusterClient()
 
 	subMux, err := submux.New(client,
@@ -232,7 +234,7 @@ func TestManualResubscribe(t *testing.T) {
 	}
 	defer subMux.Close()
 
-	channelName := "manual-resub-test"
+	channelName := uniqueChannel("manual-resub-test")
 	messages := make(chan *submux.Message, 10)
 	signals := make(chan *submux.Message, 10)
 
@@ -291,7 +293,7 @@ func TestManualResubscribe(t *testing.T) {
 	}
 
 	// Wait a bit to ensure we would have missed messages if we didn't resubscribe
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
 	// Reload state to ensure client knows about new topology for correct routing
 	client.ReloadState(context.Background())
@@ -328,7 +330,7 @@ func TestManualResubscribe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	var caught bool
@@ -360,7 +362,7 @@ func TestManualResubscribe(t *testing.T) {
 func TestNodeFailure_SubscriptionContinuation(t *testing.T) {
 	t.Parallel()
 	// Need at least 3 shards with replicas to survive a master failure
-	cluster := setupTestCluster(t, 9)
+	cluster := setupTestCluster(t, 6)
 	client := cluster.GetClusterClient()
 
 	subMux, err := submux.New(client,
@@ -401,6 +403,10 @@ func TestNodeFailure_SubscriptionContinuation(t *testing.T) {
 	<-messages
 
 	// KILL the master node
+	// Dump cluster nodes before failure
+	nodesInfo, _ := client.ClusterNodes(context.Background()).Result()
+	t.Logf("Cluster Nodes Pre-Failure:\n%s", nodesInfo)
+
 	t.Logf("Stopping master node %s...", masterNodeAddr)
 	err = cluster.StopNode(masterNodeAddr)
 	if err != nil {
@@ -415,7 +421,7 @@ func TestNodeFailure_SubscriptionContinuation(t *testing.T) {
 	// Wait for cluster specific state to become OK via another node
 	ok := false
 	for i := 0; i < 30; i++ {
-		time.Sleep(1 * time.Second)
+		time.Sleep(200 * time.Millisecond)
 
 		// Get a living node client
 		var checkClient *redis.Client
@@ -463,8 +469,8 @@ func TestNodeFailure_SubscriptionContinuation(t *testing.T) {
 		t.Fatalf("No healthy nodes found to publish to")
 	}
 
-	pubClient := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs: []string{healthyNode},
+	pubClient := redis.NewClient(&redis.Options{
+		Addr: healthyNode,
 	})
 	defer pubClient.Close()
 
@@ -483,14 +489,16 @@ func TestNodeFailure_SubscriptionContinuation(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatalf("Timeout waiting for message after failover")
 		case <-ticker.C:
-			// Ensure pub client has fresh state
-			pubClient.ReloadState(context.Background())
-
 			payload := fmt.Sprintf("post-failover-%d", time.Now().UnixNano())
-			err := pubClient.Publish(context.Background(), channelName, payload).Err()
+			res, err := pubClient.Publish(context.Background(), channelName, payload).Result()
 			if err != nil {
 				t.Logf("Publish failed (expected during failover): %v", err)
 				continue
+			}
+			if res == 0 {
+				t.Logf("Publish succeeded but 0 subscribers received it")
+			} else {
+				t.Logf("Publish succeeded, receivers: %d", res)
 			}
 
 			// Check if we got it

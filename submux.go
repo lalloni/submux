@@ -216,6 +216,7 @@ func New(clusterClient *redis.ClusterClient, opts ...Option) (*SubMux, error) {
 
 	// Create and start topology monitor
 	subMux.topologyMonitor = newTopologyMonitor(clusterClient, cfg, subMux)
+	subMux.pool.setTopologyMonitor(subMux.topologyMonitor)
 	subMux.topologyMonitor.start()
 
 	return subMux, nil
@@ -302,7 +303,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 	hashslot := Hashslot(channel)
 
 	// Get or create PubSub for this hashslot
-	pubsub, err := sm.pool.getPubSubForHashslot(ctx, hashslot)
+	pubsub, err := sm.pool.getPubSubForHashslot(ctx, hashslot, channel)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get PubSub for hashslot %d: %w", hashslot, err)
 	}
