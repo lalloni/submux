@@ -2,14 +2,10 @@ package submux
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"math/rand"
-	"net"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -211,40 +207,6 @@ func (tm *topologyMonitor) monitor() {
 			return
 		}
 	}
-}
-
-// isConnectionError checks if an error is a connection-related error.
-// isConnectionError checks if an error is a connection-related error.
-func isConnectionError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		// Check for specific net errors
-		if opErr.Op == "dial" {
-			return true
-		}
-		if errors.Is(opErr, syscall.ECONNREFUSED) {
-			return true
-		}
-	}
-
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
-		return true
-	}
-
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return true
-	}
-
-	if errors.Is(err, syscall.ECONNREFUSED) {
-		return true
-	}
-
-	return false
 }
 
 // refreshTopology fetches the current topology and detects changes.
