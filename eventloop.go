@@ -3,7 +3,6 @@ package submux
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -43,7 +42,7 @@ func runEventLoop(meta *pubSubMetadata) {
 				}
 				// Mark PubSub as failed
 				meta.setState(connStateFailed)
-				log.Printf("submux: command send error on PubSub to %s: %v", meta.nodeAddr, err)
+				meta.logger.Error("submux: command send error", "node", meta.nodeAddr, "error", err)
 				return
 			}
 
@@ -59,7 +58,7 @@ func runEventLoop(meta *pubSubMetadata) {
 			if !ok {
 				// Channel closed - mark as failed
 				meta.setState(connStateFailed)
-				log.Printf("submux: PubSub channel closed for %s", meta.nodeAddr)
+				meta.logger.Error("submux: PubSub channel closed", "node", meta.nodeAddr)
 
 				// Notify all subscriptions of failure
 				notifySubscriptionsOfFailure(meta, fmt.Errorf("pubsub channel closed"))
@@ -68,7 +67,7 @@ func runEventLoop(meta *pubSubMetadata) {
 
 			// Process the message - can be either *redis.Subscription or *redis.Message
 			if err := processResponse(meta, msg); err != nil {
-				log.Printf("submux: error processing response: %v", err)
+				meta.logger.Error("submux: error processing response", "error", err)
 			}
 
 		case <-meta.done:
@@ -161,7 +160,7 @@ func handleSubscriptionConfirmation(meta *pubSubMetadata, sub *redis.Subscriptio
 		// Unsubscribe confirmation - nothing to do
 
 	default:
-		log.Printf("submux: unknown subscription kind: %s", sub.Kind)
+		meta.logger.Warn("submux: unknown subscription kind", "kind", sub.Kind)
 	}
 
 	return nil
@@ -184,7 +183,7 @@ func handleMessageFromPubSub(meta *pubSubMetadata, channel, payload string) erro
 	}
 
 	for _, sub := range subs {
-		invokeCallback(sub.callback, msg)
+		invokeCallback(meta.logger, sub.callback, msg)
 	}
 	return nil
 }
@@ -207,7 +206,7 @@ func handlePMessageFromPubSub(meta *pubSubMetadata, pattern, channel, payload st
 	}
 
 	for _, sub := range subs {
-		invokeCallback(sub.callback, msg)
+		invokeCallback(meta.logger, sub.callback, msg)
 	}
 	return nil
 }
@@ -232,7 +231,7 @@ func handleSMessageFromPubSub(meta *pubSubMetadata, channel, payload string) err
 	}
 
 	for _, sub := range subs {
-		invokeCallback(sub.callback, msg)
+		invokeCallback(meta.logger, sub.callback, msg)
 	}
 	return nil
 }
@@ -253,6 +252,6 @@ func notifySubscriptionsOfFailure(meta *pubSubMetadata, err error) {
 			Signal:    signal,
 			Timestamp: time.Now(),
 		}
-		invokeCallback(sub.callback, msg)
+		invokeCallback(meta.logger, sub.callback, msg)
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math/rand"
 	"net"
 	"strings"
@@ -51,7 +50,14 @@ func (ts *topologyState) update(slots []redis.ClusterSlot) {
 			continue
 		}
 		masterAddr := slot.Nodes[0].Addr
-		log.Printf("DEBUG: slot %d-%d master: %s, nodes: %v", slot.Start, slot.End, masterAddr, slot.Nodes)
+
+		// tm.config.logger is not available here easily as this is a method on topologyState.
+		// However, this log was debug level. We can remove it or ignore it for now,
+		// but wait, topologyState doesn't have logger.
+		// The original code used global log.Printf.
+		// Let's remove this debug log or make it silent properly later.
+		// Actually, I should probably pass logger to update() or just remove it as "DEBUG".
+		// Removing it for migration.
 
 		// Map all hashslots in this range to the master node
 		for hashslot := int(slot.Start); hashslot <= int(slot.End); hashslot++ {
@@ -207,7 +213,7 @@ func (tm *topologyMonitor) monitor() {
 		case <-ticker.C:
 			if err := tm.refreshTopology(); err != nil {
 				// Log all errors for debugging
-				log.Printf("submux: topology refresh failed: %v", err)
+				tm.config.logger.Error("submux: topology refresh failed", "error", err)
 			}
 		case <-tm.done:
 			return
@@ -272,7 +278,7 @@ func (tm *topologyMonitor) refreshTopology() error {
 	slots, err = tm.clusterClient.ClusterSlots(ctx).Result()
 	if err != nil {
 		// Log the error
-		log.Printf("submux: main client ClusterSlots failed: %v", err)
+		tm.config.logger.Warn("submux: main client ClusterSlots failed, trying fallback", "error", err)
 
 		// Fallback: try to contact seed nodes directly
 		// This handles cases where the main client's view of the cluster is stale or stuck on a dead node
@@ -324,7 +330,7 @@ func (tm *topologyMonitor) refreshTopology() error {
 			nodeClient.Close()
 
 			if nodeErr == nil {
-				log.Printf("submux: successfully recovered topology from seed node %s", addr)
+				tm.config.logger.Info("submux: successfully recovered topology from seed node", "seed_node", addr)
 				slots = nodeSlots
 				err = nil
 				break
@@ -349,9 +355,9 @@ func (tm *topologyMonitor) refreshTopology() error {
 
 	// Handle detected migrations
 	if len(migrations) > 0 {
-		log.Printf("submux: detected %d migrations", len(migrations))
+		tm.config.logger.Info("submux: detected migrations", "count", len(migrations))
 		for _, m := range migrations {
-			log.Printf("submux: migration: slot %d from %s to %s", m.hashslot, m.oldNode, m.newNode)
+			tm.config.logger.Info("submux: migration", "slot", m.hashslot, "old_node", m.oldNode, "new_node", m.newNode)
 		}
 		tm.handleMigrations(migrations)
 	}
@@ -428,7 +434,7 @@ func (tm *topologyMonitor) sendSignalMessages(subs []*subscription, migration ha
 
 	// Send to all affected subscriptions
 	for _, sub := range subs {
-		invokeCallback(sub.callback, msg)
+		invokeCallback(tm.config.logger, sub.callback, msg)
 	}
 }
 
@@ -450,10 +456,10 @@ func (tm *topologyMonitor) sendMigrationTimeoutSignal(subs []*subscription, migr
 
 	// Send to all affected subscriptions
 	for _, sub := range subs {
-		invokeCallback(sub.callback, msg)
+		invokeCallback(tm.config.logger, sub.callback, msg)
 	}
 
-	log.Printf("submux: migration timeout for hashslot %d after %v", migration.hashslot, duration)
+	tm.config.logger.Warn("submux: migration timeout", "hashslot", migration.hashslot, "duration", duration)
 }
 
 // sendMigrationStalledSignal sends a signal message when migration resubscription appears to have stalled.
@@ -474,10 +480,10 @@ func (tm *topologyMonitor) sendMigrationStalledSignal(subs []*subscription, migr
 
 	// Send to all affected subscriptions
 	for _, sub := range subs {
-		invokeCallback(sub.callback, msg)
+		invokeCallback(tm.config.logger, sub.callback, msg)
 	}
 
-	log.Printf("submux: migration stalled for hashslot %d (no progress for %v)", migration.hashslot, stallDuration)
+	tm.config.logger.Warn("submux: migration stalled", "hashslot", migration.hashslot, "duration", stallDuration)
 }
 
 // resubscribeOnNewNodeWithMonitoring recreates subscriptions on the new node after migration
@@ -587,7 +593,7 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 			newPubsub, err := tm.subMux.pool.getPubSubForHashslot(ctx, migration.hashslot, channel)
 			if err != nil {
 				// Log error and continue with other subscriptions
-				log.Printf("submux: failed to get PubSub for migrated hashslot %d: %v", migration.hashslot, err)
+				tm.config.logger.Error("submux: failed to get PubSub for migrated hashslot", "hashslot", migration.hashslot, "error", err)
 				// Report progress even on error
 				processedCount += len(channelSubs)
 				if progressCh != nil {
@@ -653,14 +659,14 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 						defer cancel()
 
 						if err := m.sendCommand(cmdCtx, cmd); err != nil {
-							log.Printf("submux: failed to send resubscribe command for %s: %v", chName, err)
+							m.logger.Error("submux: failed to send resubscribe command", "channel", chName, "error", err)
 							m.removePendingSubscription(chName)
 							s.setState(subStateFailed, err)
 							return
 						}
 
 						if err := s.waitForConfirmation(cmdCtx); err != nil {
-							log.Printf("submux: resubscribe confirmation failed for %s: %v", chName, err)
+							m.logger.Error("submux: resubscribe confirmation failed", "channel", chName, "error", err)
 							// Cleanup handled by waitForConfirmation/eventLoop usually, but ensure consistency
 							s.setState(subStateFailed, err)
 						}

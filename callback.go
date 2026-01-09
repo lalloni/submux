@@ -1,14 +1,14 @@
 package submux
 
-import "log"
+import "log/slog"
 
 // invokeCallback safely invokes a callback function with panic recovery.
 // The callback is invoked asynchronously in a separate goroutine.
-func invokeCallback(callback MessageCallback, msg *Message) {
+func invokeCallback(logger *slog.Logger, callback MessageCallback, msg *Message) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("submux: panic in callback: %v", r)
+				logger.Error("submux: panic in callback", "error", r)
 			}
 		}()
 		callback(msg)

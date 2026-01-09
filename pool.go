@@ -3,6 +3,7 @@ package submux
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/redis/go-redis/v9"
@@ -29,6 +30,9 @@ type command struct {
 type pubSubMetadata struct {
 	// pubsub is the PubSub connection.
 	pubsub *redis.PubSub
+
+	// logger is the logger for this connection.
+	logger *slog.Logger
 
 	// nodeAddr is the address of the Redis node.
 	nodeAddr string
@@ -346,6 +350,7 @@ func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*
 	// Create metadata for this PubSub
 	meta := &pubSubMetadata{
 		pubsub:               pubsub,
+		logger:               p.config.logger.With("component", "pubsub_conn", "node", nodeAddr),
 		nodeAddr:             nodeAddr,
 		subscriptions:        make(map[string][]*subscription),
 		pendingSubscriptions: make(map[string]*subscription),

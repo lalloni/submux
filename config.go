@@ -1,6 +1,9 @@
 package submux
 
-import "time"
+import (
+	"log/slog"
+	"time"
+)
 
 // config holds the configuration for a SubMux instance.
 type config struct {
@@ -15,6 +18,9 @@ type config struct {
 
 	// topologyPollInterval sets how often to poll the cluster topology for changes.
 	topologyPollInterval time.Duration
+
+	// logger is the structured logger to use.
+	logger *slog.Logger
 }
 
 // defaultConfig returns the default configuration.
@@ -24,11 +30,19 @@ func defaultConfig() *config {
 		minConnectionsPerNode: 1,
 		replicaPreference:     false,
 		topologyPollInterval:  1 * time.Second, // Default: poll at least once per second
+		logger:                slog.Default(),
 	}
 }
 
 // Option is a function type for configuring a SubMux instance.
 type Option func(*config)
+
+// WithLogger sets the structured logger to use.
+func WithLogger(logger *slog.Logger) Option {
+	return func(c *config) {
+		c.logger = logger
+	}
+}
 
 // WithAutoResubscribe enables automatic resubscription when hashslot migrations occur.
 func WithAutoResubscribe(enabled bool) Option {

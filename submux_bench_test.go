@@ -2,6 +2,8 @@ package submux
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -91,9 +93,11 @@ func BenchmarkCallbackInvocation(b *testing.B) {
 		Payload: "test payload",
 	}
 
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		invokeCallback(callback, msg)
+		invokeCallback(logger, callback, msg)
 	}
 }
 
@@ -112,10 +116,12 @@ func BenchmarkCallbackInvocation_MultipleCallbacks(b *testing.B) {
 		Payload: "test payload",
 	}
 
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for _, cb := range callbacks {
-			invokeCallback(cb, msg)
+			invokeCallback(logger, cb, msg)
 		}
 	}
 }
