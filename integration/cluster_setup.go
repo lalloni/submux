@@ -212,7 +212,7 @@ dir %s
 		return nil, fmt.Errorf("nodes not ready: %w", err)
 	}
 
-	// Initialize cluster using redis-cli
+	// Initialize cluster using redis-cli (this waits for cluster to be ready)
 	if err := cluster.initializeCluster(ctx); err != nil {
 		cluster.StopCluster(ctx)
 		return nil, fmt.Errorf("failed to initialize cluster: %w", err)
@@ -228,10 +228,10 @@ dir %s
 		Addrs: addrs,
 	})
 
-	// Wait for cluster to be ready
-	if err := WaitForClusterReady(clusterClient, 30*time.Second); err != nil {
+	// Quick sanity check - initializeCluster already verified cluster is ready
+	if err := clusterClient.Ping(ctx).Err(); err != nil {
 		cluster.StopCluster(ctx)
-		return nil, fmt.Errorf("cluster not ready: %w", err)
+		return nil, fmt.Errorf("cluster client ping failed: %w", err)
 	}
 
 	cluster.clusterClient = clusterClient
@@ -701,90 +701,6 @@ func (tc *TestCluster) migrateKeys(ctx context.Context, sourceClient, targetClie
 	}
 
 	return nil
-}
-
-// WaitForClusterReady waits for a cluster client to be ready.
-// For clusters with replicas, this also waits for replication to be established.
-func WaitForClusterReady(client *redis.ClusterClient, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			// Check if cluster is ready
-			if err := client.Ping(ctx).Err(); err != nil {
-				continue
-			}
-
-			// Also check cluster info
-			info, err := client.ClusterInfo(ctx).Result()
-			if err != nil || info == "" {
-				continue
-			}
-
-			if !strings.Contains(info, "cluster_state:ok") {
-				continue
-			}
-
-			// For clusters with replicas, verify all nodes are connected
-			// by checking cluster nodes and counting replicas
-			nodes, err := client.ClusterNodes(ctx).Result()
-			if err != nil || nodes == "" {
-				continue
-			}
-
-			// Count replicas (lines containing "slave")
-			replicaCount := strings.Count(nodes, "slave")
-			// We expect at least some replicas if the cluster was created with them.
-			// Since we don't know the exact architecture here (it's generic),
-			// we can't enforce strict count unless we pass it.
-			// But for our test setup (9 nodes, 3 masters), we expect 6 replicas.
-			// If we see 0 replicas and we know we expect them, that's bad.
-			// However, this function is generic.
-			// Let's assume if we see 0 replicas in a >3 node cluster, we might be waiting.
-			// But StartCluster creates 9 nodes.
-			// Let's rely on "cluster_state:ok" AND stable topology.
-
-			// Actually, the issue was they were listed as MASTERS.
-			// If we entered with 9 nodes, and 6 are intended as replicas, but show as masters.
-			// We should wait until they convert.
-			// But strictly speaking, the client doesn't know intended count here.
-			// But `setupTestCluster` does.
-			// Let's just log and rely on the fact that if they are ALL masters, something might be wrong
-			// but we can't block indefinitely if it's a 3-master-only cluster.
-			//
-			// WAIT: The specific test failure was "All Masters".
-			// If the test setup demanded replicas, they shold be there.
-			// I'll make a heuristic: if lines > 3 and replicas == 0, wait?
-			// That might block 3-master cluster.
-			//
-			// Better: Pass expected replicas to WaitForClusterReady?
-			// But signature change affects callers.
-			//
-			// Looking at the logs, "redis-cli" said "Adding replica...".
-			// So valid state IS with replicas.
-			//
-			// Let's just check if we have ANY slaves?
-			if replicaCount > 0 {
-				return nil
-			}
-
-			// If 0 replicas, check if we have > 3 nodes?
-			lineCount := len(strings.Split(strings.TrimSpace(nodes), "\n"))
-			if lineCount > 3 && replicaCount == 0 {
-				// We likely expect replicas but they haven't synced yet
-				continue
-			}
-
-			return nil
-		}
-	}
 }
 
 // setupTestCluster is a helper function for tests to set up a cluster.
