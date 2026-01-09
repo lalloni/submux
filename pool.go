@@ -233,7 +233,7 @@ func getKeyForSlot(slot int) string {
 
 // getPubSubForHashslot returns a PubSub connection for the given hashslot.
 // It selects the least-loaded PubSub from available connections.
-func (p *pubSubPool) getPubSubForHashslot(ctx context.Context, hashslot int, initialChannel string) (*redis.PubSub, error) {
+func (p *pubSubPool) getPubSubForHashslot(ctx context.Context, hashslot int) (*redis.PubSub, error) {
 	p.mu.RLock()
 	pubsubs := p.hashslotPubSubs[hashslot]
 	p.mu.RUnlock()
@@ -261,11 +261,11 @@ func (p *pubSubPool) getPubSubForHashslot(ctx context.Context, hashslot int, ini
 	}
 
 	// No PubSub available, need to create one
-	return p.createPubSubForHashslot(ctx, hashslot, initialChannel)
+	return p.createPubSubForHashslot(ctx, hashslot)
 }
 
 // createPubSubForHashslot creates a new PubSub connection for the given hashslot.
-func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int, initialChannel string) (*redis.PubSub, error) {
+func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int) (*redis.PubSub, error) {
 	// Get node information for this hashslot from cluster topology
 	nodeAddr, err := p.getNodeForHashslot(ctx, hashslot)
 	if err != nil {

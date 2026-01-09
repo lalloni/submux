@@ -51,14 +51,6 @@ func (ts *topologyState) update(slots []redis.ClusterSlot) {
 		}
 		masterAddr := slot.Nodes[0].Addr
 
-		// tm.config.logger is not available here easily as this is a method on topologyState.
-		// However, this log was debug level. We can remove it or ignore it for now,
-		// but wait, topologyState doesn't have logger.
-		// The original code used global log.Printf.
-		// Let's remove this debug log or make it silent properly later.
-		// Actually, I should probably pass logger to update() or just remove it as "DEBUG".
-		// Removing it for migration.
-
 		// Map all hashslots in this range to the master node
 		for hashslot := int(slot.Start); hashslot <= int(slot.End); hashslot++ {
 			ts.hashslotToNode[hashslot] = masterAddr
@@ -590,7 +582,7 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 			// Recreate subscriptions on new node
 			// Get new PubSub for the hashslot (will use new node)
 			ctx := context.Background()
-			newPubsub, err := tm.subMux.pool.getPubSubForHashslot(ctx, migration.hashslot, channel)
+			newPubsub, err := tm.subMux.pool.getPubSubForHashslot(ctx, migration.hashslot)
 			if err != nil {
 				// Log error and continue with other subscriptions
 				tm.config.logger.Error("submux: failed to get PubSub for migrated hashslot", "hashslot", migration.hashslot, "error", err)

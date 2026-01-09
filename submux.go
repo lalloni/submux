@@ -303,7 +303,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 	hashslot := Hashslot(channel)
 
 	// Get or create PubSub for this hashslot
-	pubsub, err := sm.pool.getPubSubForHashslot(ctx, hashslot, channel)
+	pubsub, err := sm.pool.getPubSubForHashslot(ctx, hashslot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get PubSub for hashslot %d: %w", hashslot, err)
 	}
