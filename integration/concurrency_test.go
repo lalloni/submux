@@ -36,11 +36,11 @@ func TestConcurrentSubscriptions(t *testing.T) {
 				channels[j] = fmt.Sprintf("concurrent-%d-%d", id, j)
 			}
 
-			_, err = subMux.SubscribeSync(context.Background(), channels, func(msg *submux.Message) {
+			_, subErr := subMux.SubscribeSync(context.Background(), channels, func(msg *submux.Message) {
 				// Message received
 			})
-			if err != nil {
-				errors <- fmt.Errorf("goroutine %d failed to subscribe: %w", id, err)
+			if subErr != nil {
+				errors <- fmt.Errorf("goroutine %d failed to subscribe: %w", id, subErr)
 			}
 		}(i)
 	}
@@ -208,7 +208,7 @@ func TestConcurrentMultipleSubscriptionsSameChannel(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 
-			_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(msg *submux.Message) {
+			_, subErr := subMux.SubscribeSync(context.Background(), []string{channel}, func(msg *submux.Message) {
 				if msg.Type == submux.MessageTypeMessage {
 					mu.Lock()
 					callbackCount++
@@ -220,8 +220,8 @@ func TestConcurrentMultipleSubscriptionsSameChannel(t *testing.T) {
 					}
 				}
 			})
-			if err != nil {
-				t.Errorf("Goroutine %d failed to subscribe: %v", id, err)
+			if subErr != nil {
+				t.Errorf("Goroutine %d failed to subscribe: %v", id, subErr)
 			}
 		}(i)
 	}
