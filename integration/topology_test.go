@@ -15,9 +15,9 @@ import (
 // TestHashslotMigration verifies that we can detect hashslot migration signals.
 // Use auto-resubscribe = false to verify the signal mechanism in isolation.
 func TestHashslotMigration(t *testing.T) {
-	t.Parallel()
-	// Use dedicated cluster to avoid interference from concurrent migrations
-	cluster := setupTestCluster(t, 3, 2)
+	// t.Parallel() - disabled to reduce flakiness
+	// Use dedicated cluster for migration tests to avoid state interference
+	cluster := setupTestCluster(t, 3, 1)
 	client := cluster.GetClusterClient()
 
 	subMux, err := submux.New(client,
@@ -113,9 +113,9 @@ func TestHashslotMigration(t *testing.T) {
 }
 
 func TestAutoResubscribe(t *testing.T) {
-	t.Parallel()
-	// Use dedicated cluster to avoid interference from concurrent migrations
-	cluster := setupTestCluster(t, 3, 2)
+	// t.Parallel() - disabled to reduce flakiness
+	// Use dedicated cluster for migration tests to avoid state interference
+	cluster := setupTestCluster(t, 3, 1)
 	client := cluster.GetClusterClient()
 
 	subMux, err := submux.New(client,
@@ -179,18 +179,19 @@ func TestAutoResubscribe(t *testing.T) {
 		t.Fatalf("Failed to migrate hashslot: %v", err)
 	}
 
-	// Wait a bit for migration detection and resubscription
-	time.Sleep(500 * time.Millisecond)
+	// Wait for migration detection and resubscription
+	// MigrateHashslot now waits for cluster convergence, but we still need
+	// to allow time for the topology monitor to poll and detect the change.
+	time.Sleep(300 * time.Millisecond)
 
 	// Reload state to ensure client knows about new topology for correct routing
 	client.ReloadState(context.Background())
 
 	// Loop publish until received or timeout
-	// This helps avoid transient timing issues or race conditions immediately after resubscribe
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
 	var received bool
@@ -220,9 +221,9 @@ func TestAutoResubscribe(t *testing.T) {
 }
 
 func TestManualResubscribe(t *testing.T) {
-	t.Parallel()
-	// Use dedicated cluster to avoid interference from concurrent migrations
-	cluster := setupTestCluster(t, 3, 2)
+	// t.Parallel() - disabled to reduce flakiness
+	// Use dedicated cluster for migration tests to avoid state interference
+	cluster := setupTestCluster(t, 3, 1)
 	client := cluster.GetClusterClient()
 
 	subMux, err := submux.New(client,
@@ -327,11 +328,10 @@ func TestManualResubscribe(t *testing.T) {
 	client.ReloadState(context.Background())
 
 	// Loop publish until received or timeout
-	// This helps avoid transient timing issues or race conditions immediately after resubscribe
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
 	var caught bool
@@ -361,7 +361,7 @@ func TestManualResubscribe(t *testing.T) {
 }
 
 func TestNodeFailure_SubscriptionContinuation(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	// Need at least 3 shards with replicas to survive a master failure
 	cluster := setupTestCluster(t, 3, 2)
 	client := cluster.GetClusterClient()
@@ -516,7 +516,7 @@ func TestNodeFailure_SubscriptionContinuation(t *testing.T) {
 }
 
 func TestMultipleChannelsAcrossShards(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -612,7 +612,7 @@ func TestMultipleChannelsAcrossShards(t *testing.T) {
 }
 
 func TestSubscriptionAfterTopologyChange(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -703,9 +703,9 @@ func TestSubscriptionAfterTopologyChange(t *testing.T) {
 // so this test primarily verifies that the detection code is wired up correctly
 // and doesn't cause panics or errors.
 func TestMovedErrorDetection(t *testing.T) {
-	t.Parallel()
-	// Use dedicated cluster to avoid interference
-	cluster := setupTestCluster(t, 3, 2)
+	// t.Parallel() - disabled to reduce flakiness
+	// Use dedicated cluster for migration tests to avoid state interference
+	cluster := setupTestCluster(t, 3, 1)
 	client := cluster.GetClusterClient()
 
 	// Use a shorter poll interval for this test since we're testing
@@ -788,6 +788,7 @@ func TestMovedErrorDetection(t *testing.T) {
 	}
 
 	// Wait for signal indicating migration was detected
+	// Use longer timeout since cluster convergence can take time
 	select {
 	case sig := <-signals:
 		t.Logf("Received migration signal: %+v", sig.Signal)
@@ -800,7 +801,7 @@ func TestMovedErrorDetection(t *testing.T) {
 			t.Errorf("Expected NewNode %s, got %s", targetNode, sig.Signal.NewNode)
 		}
 
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("Timeout waiting for migration signal")
 	}
 
@@ -819,11 +820,11 @@ func TestMovedErrorDetection(t *testing.T) {
 	client.ReloadState(context.Background())
 
 	// Retry publishing until received
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	received := false
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
 	for !received {
@@ -844,11 +845,12 @@ func TestMovedErrorDetection(t *testing.T) {
 // TestAskErrorHandling verifies that ASK errors (during slot migration) are also detected.
 // ASK errors occur when a slot is in the middle of being migrated.
 func TestAskErrorHandling(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	// This test verifies the ASK detection code path exists and doesn't panic.
 	// Full ASK testing would require catching the cluster mid-migration which is difficult.
 	// The main goal is to ensure the code handles ASK errors gracefully.
-	cluster := setupTestCluster(t, 3, 2)
+	// Use dedicated cluster for migration tests to avoid state interference
+	cluster := setupTestCluster(t, 3, 1)
 	client := cluster.GetClusterClient()
 
 	subMux, err := submux.New(client,
@@ -894,8 +896,9 @@ func TestAskErrorHandling(t *testing.T) {
 // is attempted after a migration (but before polling detects it), the MOVED error
 // triggers a topology refresh and the subscription eventually succeeds.
 func TestTopologyRefreshOnSubscriptionAfterMigration(t *testing.T) {
-	t.Parallel()
-	cluster := setupTestCluster(t, 3, 2)
+	// t.Parallel() - disabled to reduce flakiness
+	// Use dedicated cluster for migration tests to avoid state interference
+	cluster := setupTestCluster(t, 3, 1)
 	client := cluster.GetClusterClient()
 
 	// Use moderate poll interval - system should recover via polling or MOVED detection
@@ -944,8 +947,8 @@ func TestTopologyRefreshOnSubscriptionAfterMigration(t *testing.T) {
 		t.Fatalf("Failed to migrate: %v", err)
 	}
 
-	// Wait a moment for migration to complete but not long enough for 30s poll
-	time.Sleep(500 * time.Millisecond)
+	// Wait a moment for migration to complete
+	time.Sleep(200 * time.Millisecond)
 
 	// Now try to subscribe to another channel on the same hashslot
 	// This should trigger MOVED detection when it tries to use the old connection
@@ -1007,7 +1010,7 @@ drainSignals:
 	}
 
 	// Use retry loop for message verification
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	received := false
@@ -1022,7 +1025,7 @@ drainSignals:
 			// This is acceptable - the main test is that MOVED detection doesn't crash
 			t.Log("Message not received, but test verifies MOVED detection code path works without errors")
 			return
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(200 * time.Millisecond):
 			// Republish
 			_ = client.SPublish(context.Background(), channel1, "after-migration").Err()
 		}

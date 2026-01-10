@@ -15,7 +15,7 @@ import (
 
 // TestHighSubscriptionCount tests subscribing to a large number of channels.
 func TestHighSubscriptionCount(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	if testing.Short() {
 		t.Skip("Skipping load test in short mode")
 	}
@@ -62,7 +62,7 @@ func TestHighSubscriptionCount(t *testing.T) {
 	}
 
 	// Wait for messages
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
 	received := atomic.LoadInt64(&messageCount)
 	if received < int64(len(testChannels)) {
@@ -125,7 +125,7 @@ func TestHighSubscriptionCount_MemoryUsage(t *testing.T) {
 
 // TestHighMessageThroughput tests high message throughput.
 func TestHighMessageThroughput(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	if testing.Short() {
 		t.Skip("Skipping load test in short mode")
 	}
@@ -227,7 +227,7 @@ func TestHighMessageThroughput(t *testing.T) {
 
 // TestHighMessageThroughput_CallbackPerformance tests callback performance under load.
 func TestHighMessageThroughput_CallbackPerformance(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	if testing.Short() {
 		t.Skip("Skipping load test in short mode")
 	}
@@ -323,7 +323,7 @@ func TestHighMessageThroughput_CallbackPerformance(t *testing.T) {
 
 // TestLongRunningSubscriptions tests subscriptions over an extended period.
 func TestLongRunningSubscriptions(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	if testing.Short() {
 		t.Skip("Skipping long-running test in short mode")
 	}

@@ -11,7 +11,7 @@ import (
 )
 
 func TestSubscribeBasic(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	if client == nil {
@@ -57,7 +57,7 @@ func TestSubscribeBasic(t *testing.T) {
 }
 
 func TestSubscribeMultipleChannels(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -128,7 +128,7 @@ func TestSubscribeMultipleChannels(t *testing.T) {
 }
 
 func TestSubscribeMessageDelivery(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -175,7 +175,7 @@ func TestSubscribeMessageDelivery(t *testing.T) {
 }
 
 func TestSubscribeErrorHandling(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
