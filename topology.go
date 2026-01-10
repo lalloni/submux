@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -471,11 +472,18 @@ func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscripti
 
 	startTime := time.Now()
 	lastProgressTime := startTime
-	lastProcessedCount := 0
+	var lastProcessedCount int64
 
-	// Channel to track progress updates
-	progressCh := make(chan int, 1)
+	// Atomic counter for tracking progress from multiple goroutines
+	var processedCount atomic.Int64
+
+	// WaitGroup to track spawned goroutines
+	var wg sync.WaitGroup
+
+	// Channel to signal completion to monitoring goroutine
 	doneCh := make(chan struct{})
+
+	totalSubs := int64(len(subs))
 
 	// Progress monitoring goroutine
 	go func() {
@@ -486,59 +494,45 @@ func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscripti
 			select {
 			case <-doneCh:
 				return
-			case count := <-progressCh:
-				lastProcessedCount = count
-				lastProgressTime = time.Now()
-				// Check if we've completed all subscriptions
-				if count >= len(subs) {
+			case <-ticker.C:
+				currentCount := processedCount.Load()
+
+				// Check if completed
+				if currentCount >= totalSubs {
 					return
 				}
-			case <-ticker.C:
+
 				// Check for timeout
 				if time.Since(startTime) > migrationTimeout {
 					tm.sendMigrationTimeoutSignal(subs, migration, migrationTimeout)
 					return
 				}
 
-				// Check for stall (no progress in last interval)
-				// Only report stall if we haven't completed all subscriptions
-				if lastProcessedCount < len(subs) && time.Since(lastProgressTime) > stallCheckInterval {
-					// Check if there's new progress we haven't seen yet
-					select {
-					case count := <-progressCh:
-						lastProcessedCount = count
-						lastProgressTime = time.Now()
-						if count >= len(subs) {
-							return
-						}
-					default:
-						// No new progress and we haven't completed - it's a stall
-						tm.sendMigrationStalledSignal(subs, migration, time.Since(lastProgressTime))
-						return
-					}
+				// Check for progress since last tick
+				if currentCount > lastProcessedCount {
+					lastProcessedCount = currentCount
+					lastProgressTime = time.Now()
+				} else if time.Since(lastProgressTime) > stallCheckInterval {
+					// No progress in last interval - it's a stall
+					tm.sendMigrationStalledSignal(subs, migration, time.Since(lastProgressTime))
+					return
 				}
 			}
 		}
 	}()
 
-	// Perform resubscription with proper cleanup
-	func() {
-		defer func() {
-			// Always send final progress update and signal completion, even on panic
-			if progressCh != nil {
-				select {
-				case progressCh <- len(subs):
-				default:
-				}
-			}
-			close(doneCh)
-		}()
-		tm.resubscribeOnNewNode(subs, migration, progressCh)
-	}()
+	// Perform resubscription
+	tm.resubscribeOnNewNode(subs, migration, &processedCount, &wg)
+
+	// Wait for all spawned goroutines to complete before signaling done
+	wg.Wait()
+
+	// Signal monitoring goroutine to exit
+	close(doneCh)
 }
 
 // resubscribeOnNewNode recreates subscriptions on the new node after migration.
-func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration hashslotMigration, progressCh chan<- int) {
+func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration hashslotMigration, processedCount *atomic.Int64, wg *sync.WaitGroup) {
 	// Group subscriptions by channel (to avoid duplicate SUBSCRIBE commands)
 	channelsByType := make(map[subscriptionType]map[string][]*subscription)
 	for _, sub := range subs {
@@ -547,8 +541,6 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 		}
 		channelsByType[sub.subType][sub.channel] = append(channelsByType[sub.subType][sub.channel], sub)
 	}
-
-	processedCount := 0
 
 	// For each subscription type and channel, recreate subscriptions
 	for subType, channels := range channelsByType {
@@ -570,13 +562,7 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 				// Log error and continue with other subscriptions
 				tm.config.logger.Error("submux: failed to get PubSub for migrated hashslot", "hashslot", migration.hashslot, "error", err)
 				// Report progress even on error
-				processedCount += len(channelSubs)
-				if progressCh != nil {
-					select {
-					case progressCh <- processedCount:
-					default:
-					}
-				}
+				processedCount.Add(int64(len(channelSubs)))
 				continue
 			}
 			for _, sub := range channelSubs {
@@ -586,13 +572,7 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 				// Get metadata for new PubSub
 				meta := tm.subMux.pool.getMetadata(newPubsub)
 				if meta == nil {
-					processedCount++
-					if progressCh != nil {
-						select {
-						case progressCh <- processedCount:
-						default:
-						}
-					}
+					processedCount.Add(1)
 					continue
 				}
 
@@ -620,8 +600,14 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 					sub.setState(subStatePending, nil)
 					meta.addPendingSubscription(sub)
 
+					// Track this goroutine in the WaitGroup
+					wg.Add(1)
+
 					// Send subscription command asynchronously to avoid blocking topology monitor
-					go func(s *subscription, cName string, chName string, m *pubSubMetadata) {
+					go func(s *subscription, cName string, chName string, m *pubSubMetadata, counter *atomic.Int64) {
+						defer wg.Done()
+						defer counter.Add(1)
+
 						cmd := &command{
 							cmd:      cName,
 							args:     []any{chName},
@@ -645,19 +631,11 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 							// Cleanup handled by waitForConfirmation/eventLoop usually, but ensure consistency
 							s.setState(subStateFailed, err)
 						}
-					}(sub, cmdName, channel, meta)
+					}(sub, cmdName, channel, meta, processedCount)
 				} else {
 					// Channel is already active on this connection
 					sub.setState(subStateActive, nil)
-				}
-
-				// Report progress after processing each subscription
-				processedCount++
-				if progressCh != nil {
-					select {
-					case progressCh <- processedCount:
-					default:
-					}
+					processedCount.Add(1)
 				}
 			}
 		}
