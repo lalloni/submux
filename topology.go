@@ -65,12 +65,16 @@ func (ts *topologyState) getNodeForHashslot(hashslot int) (string, bool) {
 
 // getNodeForHashslot returns the node address that owns the given hashslot from the topology monitor.
 func (tm *topologyMonitor) getNodeForHashslot(hashslot int) (string, bool) {
+	// Copy state reference under lock to avoid nested lock acquisition
+	// (tm.mu -> topologyState.mu could deadlock if acquired in reverse elsewhere)
 	tm.mu.Lock()
-	defer tm.mu.Unlock()
-	if tm.currentState == nil {
+	state := tm.currentState
+	tm.mu.Unlock()
+
+	if state == nil {
 		return "", false
 	}
-	return tm.currentState.getNodeForHashslot(hashslot)
+	return state.getNodeForHashslot(hashslot)
 }
 
 // getAnySlotForNode returns any hashslot owned by the given node.
@@ -86,15 +90,17 @@ func (ts *topologyState) getAnySlotForNode(nodeAddr string) (int, bool) {
 
 // getAnySlotForNode returns any hashslot owned by the given node from the topology monitor.
 func (tm *topologyMonitor) getAnySlotForNode(nodeAddr string) (int, bool) {
+	// Copy state reference under lock to avoid nested lock acquisition
 	tm.mu.Lock()
-	defer tm.mu.Unlock()
-	if tm.currentState == nil {
+	state := tm.currentState
+	tm.mu.Unlock()
+
+	if state == nil {
 		return 0, false
 	}
-	return tm.currentState.getAnySlotForNode(nodeAddr)
+	return state.getAnySlotForNode(nodeAddr)
 }
 
-// compareAndDetectChanges compares the current topology with a previous state and returns detected migrations.
 // compareAndDetectChanges compares the current topology with a previous state and returns detected migrations.
 func (ts *topologyState) compareAndDetectChanges(previous *topologyState) []hashslotMigration {
 	ts.mu.RLock()
