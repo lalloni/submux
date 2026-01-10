@@ -217,3 +217,238 @@ func TestSubscription_ErrorHandling(t *testing.T) {
 		t.Errorf("Expected state Active, got %v", sub.getState())
 	}
 }
+
+// Edge case tests for subscription state transitions
+
+func TestSubscription_SetStateWithNilConfirmCh(t *testing.T) {
+	// Test that setState doesn't panic when confirmCh is nil
+	sub := &subscription{
+		channel:   "test",
+		state:     subStatePending,
+		confirmCh: nil, // No confirmation channel
+	}
+
+	// Should not panic
+	sub.setState(subStateActive, nil)
+	if sub.getState() != subStateActive {
+		t.Errorf("Expected state Active, got %v", sub.getState())
+	}
+
+	sub.setState(subStateFailed, context.DeadlineExceeded)
+	if sub.getState() != subStateFailed {
+		t.Errorf("Expected state Failed, got %v", sub.getState())
+	}
+}
+
+func TestSubscription_SetStateDropsWhenConfirmChFull(t *testing.T) {
+	// Test that setState doesn't block when confirmCh is full
+	sub := &subscription{
+		channel:   "test",
+		state:     subStatePending,
+		confirmCh: make(chan error, 1),
+	}
+
+	// Fill the channel
+	sub.confirmCh <- nil
+
+	// This should not block (select with default case)
+	sub.setState(subStateActive, nil)
+	if sub.getState() != subStateActive {
+		t.Errorf("Expected state Active, got %v", sub.getState())
+	}
+}
+
+func TestSubscription_WaitForConfirmation_NilConfirmCh(t *testing.T) {
+	sub := &subscription{
+		channel:   "test",
+		state:     subStatePending,
+		confirmCh: nil,
+	}
+
+	// Should return immediately with nil error when confirmCh is nil
+	err := sub.waitForConfirmation(context.Background())
+	if err != nil {
+		t.Errorf("waitForConfirmation with nil confirmCh should return nil, got %v", err)
+	}
+}
+
+func TestSubscription_AllStateTransitionPaths(t *testing.T) {
+	// Test all valid state transitions according to documentation:
+	// Pending → Active, Pending → Failed
+	// Active → Failed, Active → Closed
+	// Failed → Closed
+
+	tests := []struct {
+		name      string
+		fromState subscriptionState
+		toState   subscriptionState
+	}{
+		{"Pending → Active", subStatePending, subStateActive},
+		{"Pending → Failed", subStatePending, subStateFailed},
+		{"Active → Failed", subStateActive, subStateFailed},
+		{"Active → Closed", subStateActive, subStateClosed},
+		{"Failed → Closed", subStateFailed, subStateClosed},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sub := &subscription{
+				channel:   "test",
+				state:     tt.fromState,
+				confirmCh: make(chan error, 1),
+			}
+
+			sub.setState(tt.toState, nil)
+			if sub.getState() != tt.toState {
+				t.Errorf("transition %s: got state %v, want %v", tt.name, sub.getState(), tt.toState)
+			}
+		})
+	}
+}
+
+func TestSubscription_SameStateTransition(t *testing.T) {
+	// Test that setting the same state is allowed
+	states := []subscriptionState{subStatePending, subStateActive, subStateFailed, subStateClosed}
+
+	for _, state := range states {
+		t.Run("same state", func(t *testing.T) {
+			sub := &subscription{
+				channel:   "test",
+				state:     state,
+				confirmCh: make(chan error, 1),
+			}
+
+			sub.setState(state, nil)
+			if sub.getState() != state {
+				t.Errorf("same state transition failed: got %v, want %v", sub.getState(), state)
+			}
+		})
+	}
+}
+
+func TestSubscription_ConcurrentStateAccess(t *testing.T) {
+	sub := &subscription{
+		channel:   "test",
+		state:     subStatePending,
+		confirmCh: make(chan error, 100),
+	}
+
+	done := make(chan bool)
+	iterations := 1000
+
+	// Writer goroutine
+	go func() {
+		for i := 0; i < iterations; i++ {
+			if i%2 == 0 {
+				sub.setState(subStateActive, nil)
+			} else {
+				sub.setState(subStateFailed, nil)
+			}
+		}
+		done <- true
+	}()
+
+	// Reader goroutine
+	go func() {
+		for i := 0; i < iterations; i++ {
+			state := sub.getState()
+			// Just verify no panic and state is valid
+			if state != subStatePending && state != subStateActive && state != subStateFailed && state != subStateClosed {
+				t.Errorf("Invalid state: %v", state)
+			}
+		}
+		done <- true
+	}()
+
+	// Wait for both goroutines
+	<-done
+	<-done
+}
+
+func TestSubscription_SubscriptionTypes(t *testing.T) {
+	types := []struct {
+		subType subscriptionType
+		name    string
+	}{
+		{subTypeSubscribe, "Subscribe"},
+		{subTypePSubscribe, "PSubscribe"},
+		{subTypeSSubscribe, "SSubscribe"},
+	}
+
+	for _, tt := range types {
+		t.Run(tt.name, func(t *testing.T) {
+			sub := &subscription{
+				channel: "test",
+				subType: tt.subType,
+				state:   subStatePending,
+			}
+
+			if sub.subType != tt.subType {
+				t.Errorf("subType = %v, want %v", sub.subType, tt.subType)
+			}
+		})
+	}
+}
+
+func TestSubscription_HashslotValues(t *testing.T) {
+	tests := []struct {
+		name     string
+		hashslot int
+	}{
+		{"minimum hashslot", 0},
+		{"maximum hashslot", 16383},
+		{"middle hashslot", 8192},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sub := &subscription{
+				channel:  "test",
+				hashslot: tt.hashslot,
+				state:    subStatePending,
+			}
+
+			if sub.hashslot != tt.hashslot {
+				t.Errorf("hashslot = %d, want %d", sub.hashslot, tt.hashslot)
+			}
+		})
+	}
+}
+
+func TestSubscription_EmptyChannel(t *testing.T) {
+	sub := &subscription{
+		channel:   "",
+		state:     subStatePending,
+		confirmCh: make(chan error, 1),
+	}
+
+	if sub.channel != "" {
+		t.Errorf("channel = %q, want empty string", sub.channel)
+	}
+
+	// State operations should still work
+	sub.setState(subStateActive, nil)
+	if sub.getState() != subStateActive {
+		t.Errorf("state = %v, want Active", sub.getState())
+	}
+}
+
+func TestSubscription_NilCallback(t *testing.T) {
+	sub := &subscription{
+		channel:   "test",
+		callback:  nil,
+		state:     subStatePending,
+		confirmCh: make(chan error, 1),
+	}
+
+	// Nil callback should be allowed at struct level
+	if sub.callback != nil {
+		t.Error("callback should be nil")
+	}
+
+	// State operations should still work
+	sub.setState(subStateActive, nil)
+	if sub.getState() != subStateActive {
+		t.Errorf("state = %v, want Active", sub.getState())
+	}
+}

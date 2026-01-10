@@ -680,3 +680,344 @@ func TestPubSubPool_EmptyHashslot(t *testing.T) {
 		t.Errorf("Expected empty list for non-existent hashslot, got %d", len(pubsubs))
 	}
 }
+
+// Edge case tests for pool operations
+
+func TestPubSubMetadata_RemoveNonExistentSubscription(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	// Add a subscription
+	sub1 := &subscription{channel: "channel1", confirmCh: make(chan error, 1)}
+	meta.addSubscription(sub1)
+
+	// Try to remove a non-existent subscription (should not panic)
+	nonExistent := &subscription{channel: "channel1", confirmCh: make(chan error, 1)}
+	meta.removeSubscription(nonExistent)
+
+	// Original should still be there
+	subs := meta.getSubscriptions("channel1")
+	if len(subs) != 1 {
+		t.Errorf("After removing non-existent, got %d subscriptions, want 1", len(subs))
+	}
+}
+
+func TestPubSubMetadata_RemoveFromEmptyChannel(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	// Try to remove from a channel that doesn't exist (should not panic)
+	sub := &subscription{channel: "nonexistent", confirmCh: make(chan error, 1)}
+	meta.removeSubscription(sub)
+}
+
+func TestPubSubMetadata_MultipleSubscriptionsSameChannel(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	// Add multiple subscriptions to the same channel
+	subs := make([]*subscription, 10)
+	for i := 0; i < 10; i++ {
+		subs[i] = &subscription{channel: "channel1", confirmCh: make(chan error, 1)}
+		meta.addSubscription(subs[i])
+	}
+
+	if meta.subscriptionCount() != 10 {
+		t.Errorf("subscriptionCount = %d, want 10", meta.subscriptionCount())
+	}
+
+	// Remove from middle
+	meta.removeSubscription(subs[5])
+	if meta.subscriptionCount() != 9 {
+		t.Errorf("After removal, subscriptionCount = %d, want 9", meta.subscriptionCount())
+	}
+
+	// Remove first
+	meta.removeSubscription(subs[0])
+	if meta.subscriptionCount() != 8 {
+		t.Errorf("After removal, subscriptionCount = %d, want 8", meta.subscriptionCount())
+	}
+
+	// Remove last
+	meta.removeSubscription(subs[9])
+	if meta.subscriptionCount() != 7 {
+		t.Errorf("After removal, subscriptionCount = %d, want 7", meta.subscriptionCount())
+	}
+}
+
+func TestPubSubMetadata_SubscriptionCountZero(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	if meta.subscriptionCount() != 0 {
+		t.Errorf("Empty metadata subscriptionCount = %d, want 0", meta.subscriptionCount())
+	}
+}
+
+func TestPubSubMetadata_GetSubscriptionsEmptyChannel(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	subs := meta.getSubscriptions("nonexistent")
+	if len(subs) != 0 {
+		t.Errorf("getSubscriptions for non-existent channel = %d, want 0", len(subs))
+	}
+}
+
+func TestPubSubMetadata_GetAllSubscriptionsEmpty(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	all := meta.getAllSubscriptions()
+	if len(all) != 0 {
+		t.Errorf("getAllSubscriptions on empty = %d, want 0", len(all))
+	}
+}
+
+func TestPubSubMetadata_ConnectionStateTransitions(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	// Active -> Failed
+	meta.setState(connStateFailed)
+	if meta.getState() != connStateFailed {
+		t.Errorf("state = %v, want connStateFailed", meta.getState())
+	}
+
+	// Failed -> Closed
+	meta.setState(connStateClosed)
+	if meta.getState() != connStateClosed {
+		t.Errorf("state = %v, want connStateClosed", meta.getState())
+	}
+}
+
+func TestPubSubMetadata_PendingSubscriptionOverwrite(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	sub1 := &subscription{channel: "test", state: subStatePending, confirmCh: make(chan error, 1)}
+	sub2 := &subscription{channel: "test", state: subStatePending, confirmCh: make(chan error, 1)}
+
+	meta.addPendingSubscription(sub1)
+	meta.addPendingSubscription(sub2)
+
+	// Second should overwrite first
+	pending := meta.getPendingSubscription("test")
+	if pending != sub2 {
+		t.Error("Second pending subscription should overwrite first")
+	}
+}
+
+func TestPubSubMetadata_RemovePendingOnRemoveSubscription(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	sub := &subscription{channel: "test", state: subStatePending, confirmCh: make(chan error, 1)}
+	meta.addSubscription(sub)
+	meta.addPendingSubscription(sub)
+
+	// Verify both are present
+	if meta.getPendingSubscription("test") != sub {
+		t.Error("Pending subscription should be present")
+	}
+
+	// Remove subscription should also remove from pending
+	meta.removeSubscription(sub)
+
+	// Pending should be removed
+	if meta.getPendingSubscription("test") != nil {
+		t.Error("Pending subscription should be removed when subscription is removed")
+	}
+}
+
+func TestPubSubPool_ConcurrentAccess(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	done := make(chan bool)
+	iterations := 100
+
+	// Writer goroutine for hashslotPubSubs
+	go func() {
+		for i := 0; i < iterations; i++ {
+			pool.mu.Lock()
+			pool.hashslotPubSubs[i%16384] = []*redis.PubSub{}
+			pool.mu.Unlock()
+		}
+		done <- true
+	}()
+
+	// Reader goroutine
+	go func() {
+		for i := 0; i < iterations; i++ {
+			pool.mu.RLock()
+			_ = pool.hashslotPubSubs[i%16384]
+			pool.mu.RUnlock()
+		}
+		done <- true
+	}()
+
+	// Invalidation goroutine
+	go func() {
+		for i := 0; i < iterations; i++ {
+			pool.invalidateHashslot(i % 16384)
+		}
+		done <- true
+	}()
+
+	// Wait for all goroutines
+	<-done
+	<-done
+	<-done
+}
+
+func TestPubSubPool_InvalidateAllHashslots(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	// Add entries for multiple hashslots
+	pool.mu.Lock()
+	for i := 0; i < 100; i++ {
+		pool.hashslotPubSubs[i] = []*redis.PubSub{}
+	}
+	pool.mu.Unlock()
+
+	// Invalidate all
+	for i := 0; i < 100; i++ {
+		pool.invalidateHashslot(i)
+	}
+
+	pool.mu.RLock()
+	count := len(pool.hashslotPubSubs)
+	pool.mu.RUnlock()
+
+	if count != 0 {
+		t.Errorf("After invalidating all, hashslotPubSubs count = %d, want 0", count)
+	}
+}
+
+func TestPubSubPool_NodePubSubsManagement(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	// Add pubsubs for multiple nodes
+	pubsub1 := &redis.PubSub{}
+	pubsub2 := &redis.PubSub{}
+
+	pool.mu.Lock()
+	pool.nodePubSubs["node1:7000"] = []*redis.PubSub{pubsub1}
+	pool.nodePubSubs["node2:7000"] = []*redis.PubSub{pubsub2}
+	pool.mu.Unlock()
+
+	pool.mu.RLock()
+	node1Subs := pool.nodePubSubs["node1:7000"]
+	node2Subs := pool.nodePubSubs["node2:7000"]
+	pool.mu.RUnlock()
+
+	if len(node1Subs) != 1 {
+		t.Errorf("node1 pubsubs = %d, want 1", len(node1Subs))
+	}
+	if len(node2Subs) != 1 {
+		t.Errorf("node2 pubsubs = %d, want 1", len(node2Subs))
+	}
+}
+
+func TestPubSubMetadata_SendCommandWithZeroBufferChannel(t *testing.T) {
+	// Use unbuffered channel - will block unless there's a receiver
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command), // Unbuffered
+		done:                 make(chan struct{}),
+	}
+
+	cmd := &command{
+		cmd:      cmdSubscribe,
+		args:     []any{"channel1"},
+		response: make(chan error, 1),
+	}
+
+	// Create a receiver before sending
+	received := make(chan bool)
+	go func() {
+		<-meta.cmdCh
+		received <- true
+	}()
+
+	ctx := context.Background()
+	err := meta.sendCommand(ctx, cmd)
+	if err != nil {
+		t.Errorf("sendCommand returned error: %v", err)
+	}
+
+	<-received
+}
+
+func TestPubSubMetadata_CloseWithPendingSubscriptions(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	// Add pending subscriptions
+	sub := &subscription{channel: "test", state: subStatePending, confirmCh: make(chan error, 1)}
+	meta.addPendingSubscription(sub)
+
+	// Close should work even with pending subscriptions
+	err := meta.close()
+	if err != nil {
+		t.Errorf("close() returned error: %v", err)
+	}
+	if meta.getState() != connStateClosed {
+		t.Errorf("state = %v, want connStateClosed", meta.getState())
+	}
+}
