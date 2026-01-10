@@ -354,9 +354,7 @@ func (tm *topologyMonitor) handleMigrations(migrations []hashslotMigration) {
 // handleMigration handles a single hashslot migration.
 func (tm *topologyMonitor) handleMigration(migration hashslotMigration) {
 	// Invalidate pool cache for this hashslot so future subscriptions use the new node
-	tm.subMux.pool.mu.Lock()
-	delete(tm.subMux.pool.hashslotPubSubs, migration.hashslot)
-	tm.subMux.pool.mu.Unlock()
+	tm.subMux.pool.invalidateHashslot(migration.hashslot)
 
 	// Find all subscriptions affected by this migration
 	affectedSubs := tm.findAffectedSubscriptions(migration.hashslot)
