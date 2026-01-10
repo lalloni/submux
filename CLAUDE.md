@@ -27,7 +27,7 @@ go test ./integration/... -v -run TestAutoResubscribeMigration
 go test -bench=. -benchmem
 ```
 
-**Important:** Integration tests automatically spawn real Redis Cluster instances (9 nodes: 3 shards with 1 master + 2 replicas each) on random ports. Tests take 20-50 seconds to complete. Ensure `redis-server` and `redis-cli` are installed and in `$PATH`.
+**Important:** Integration tests automatically spawn real Redis Cluster instances (9 nodes: 3 shards with 1 master + 2 replicas each) on random ports. Tests typically complete in ~8 seconds due to parallel execution. Ensure `redis-server` and `redis-cli` are installed and in `$PATH`.
 
 ### Building and Linting
 
@@ -110,10 +110,16 @@ Available via `submux.New(clusterClient, options...)`:
 
 **Integration Tests**: Located in `integration/`. The test harness (`cluster_setup.go`) manages real Redis clusters:
 - Finds available ports dynamically
-- Spawns redis-server processes
+- Spawns redis-server processes with process group isolation
 - Configures cluster topology via redis-cli
-- Tears down cleanly after tests
+- Tears down cleanly after tests via signal handlers and `t.Cleanup()`
 - Test data written to `integration/testdata/` (auto-deleted)
+
+**Robust Process Cleanup**: The test infrastructure includes PID file tracking (`testdata/.redis-test-pids`) to ensure no orphaned redis-server processes survive interrupted test runs:
+- PIDs are recorded when processes start
+- On test startup, orphaned processes from previous runs are detected and killed
+- Signal handlers (SIGINT, SIGTERM, SIGQUIT) trigger cleanup before exit
+- Works even when tests are forcefully interrupted (Ctrl+C, timeout)
 
 **Key Integration Test Files**:
 - `cluster_test.go`: Basic Pub/Sub functionality
@@ -239,7 +245,7 @@ The combination provides both reliable periodic updates and fast reaction to act
 - Use `sync.Mutex` for connection pool and subscription state
 - Always defer cleanup: `defer sub.Unsubscribe(ctx)` and `defer subMux.Close()`
 - Callbacks should be fast; offload heavy work to queues
-- Integration tests should use `t.Parallel()` where possible but be careful with shared cluster resources
+- Integration tests with dedicated clusters use `t.Parallel()` for faster execution; tests using the shared cluster should be careful with concurrent modifications
 - When modifying event loop, ensure commands and messages are handled atomically to avoid race conditions
 
 ## Common Gotchas

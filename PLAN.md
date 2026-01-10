@@ -91,10 +91,11 @@ We have successfully completed all 11 phases of the original implementation plan
 - ~60% Combined Coverage.
 - **Infrastructure**: Spawns local 9-node Redis Clusters (3 master + 6 replicas) on random ports.
 - **Scenarios**:
-    - `topology_test.go`: Verifies migration and failover handling.
-    - `concurrency_test.go`: Stres tests with 100+ concurrent subscribers.
+    - `topology_test.go`: Verifies migration, failover handling, and MOVED/ASK detection.
+    - `concurrency_test.go`: Stress tests with 100+ concurrent subscribers.
     - `load_test.go`: Validates high-throughput message delivery.
-- **Performance**: Event-driven execution (no `time.Sleep`), typically completes in 20-50s.
+- **Performance**: Event-driven execution with parallel test execution, typically completes in ~8s.
+- **Robust Cleanup**: PID file tracking ensures no orphaned redis-server processes survive interrupted test runs.
 
 **3. Benchmarks (`submux_bench_test.go`)**
 - Validates performance of critical paths (hashing, routing).
