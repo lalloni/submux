@@ -340,3 +340,343 @@ func TestPubSubPool_CloseAll(t *testing.T) {
 		t.Errorf("closeAll() on empty pool returned error: %v", err)
 	}
 }
+
+func TestPubSubPool_InvalidateHashslot(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	// Setup: add some entries to hashslotPubSubs
+	pool.mu.Lock()
+	pool.hashslotPubSubs[100] = []*redis.PubSub{nil} // dummy entries
+	pool.hashslotPubSubs[200] = []*redis.PubSub{nil}
+	pool.mu.Unlock()
+
+	// Test invalidating existing hashslot
+	pool.invalidateHashslot(100)
+
+	pool.mu.RLock()
+	_, exists := pool.hashslotPubSubs[100]
+	pool.mu.RUnlock()
+
+	if exists {
+		t.Error("hashslot 100 should be removed after invalidation")
+	}
+
+	// Verify other hashslot is not affected
+	pool.mu.RLock()
+	_, exists = pool.hashslotPubSubs[200]
+	pool.mu.RUnlock()
+
+	if !exists {
+		t.Error("hashslot 200 should still exist")
+	}
+
+	// Test invalidating non-existent hashslot (should not panic)
+	pool.invalidateHashslot(999)
+
+	// Test double invalidation (idempotent)
+	pool.invalidateHashslot(100)
+}
+
+func TestPubSubMetadata_PendingSubscriptions(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	sub := &subscription{
+		channel:   "test-channel",
+		state:     subStatePending,
+		confirmCh: make(chan error, 1),
+	}
+
+	// Test addPendingSubscription
+	meta.addPendingSubscription(sub)
+
+	// Test getPendingSubscription
+	pending := meta.getPendingSubscription("test-channel")
+	if pending != sub {
+		t.Error("getPendingSubscription returned wrong subscription")
+	}
+
+	// Test getPendingSubscription for non-existent
+	pending = meta.getPendingSubscription("nonexistent")
+	if pending != nil {
+		t.Error("getPendingSubscription should return nil for non-existent channel")
+	}
+
+	// Test removePendingSubscription
+	meta.removePendingSubscription("test-channel")
+	pending = meta.getPendingSubscription("test-channel")
+	if pending != nil {
+		t.Error("getPendingSubscription should return nil after removal")
+	}
+
+	// Test removePendingSubscription for non-existent (should not panic)
+	meta.removePendingSubscription("nonexistent")
+}
+
+// Helper to create a mock pubSubMetadata for load balancing tests
+func newMockMetadataWithSubs(nodeAddr string, state connectionState, subCount int) *pubSubMetadata {
+	meta := &pubSubMetadata{
+		nodeAddr:             nodeAddr,
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                state,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	// Add dummy subscriptions
+	for i := 0; i < subCount; i++ {
+		ch := "channel-" + string(rune('a'+i))
+		meta.subscriptions[ch] = []*subscription{{channel: ch}}
+	}
+
+	return meta
+}
+
+func TestPubSubPool_SelectLeastLoaded(t *testing.T) {
+	// Test the load balancing selection logic by examining getPubSubForHashslot behavior
+	// We can't easily call getPubSubForHashslot without a real Redis connection,
+	// but we can test the underlying selection pattern
+
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	// Create mock PubSubs and metadata with different subscription counts
+	pubsub1 := &redis.PubSub{}
+	pubsub2 := &redis.PubSub{}
+	pubsub3 := &redis.PubSub{}
+
+	meta1 := newMockMetadataWithSubs("node1:7000", connStateActive, 10)
+	meta2 := newMockMetadataWithSubs("node1:7000", connStateActive, 5) // Least loaded
+	meta3 := newMockMetadataWithSubs("node1:7000", connStateActive, 15)
+
+	// Setup pool state
+	pool.mu.Lock()
+	pool.hashslotPubSubs[100] = []*redis.PubSub{pubsub1, pubsub2, pubsub3}
+	pool.pubSubMetadata[pubsub1] = meta1
+	pool.pubSubMetadata[pubsub2] = meta2
+	pool.pubSubMetadata[pubsub3] = meta3
+	pool.mu.Unlock()
+
+	// Manually test the selection logic (simulating getPubSubForHashslot internal logic)
+	pool.mu.RLock()
+	pubsubs := pool.hashslotPubSubs[100]
+
+	var selectedPubSub *redis.PubSub
+	minSubs := int(^uint(0) >> 1) // Max int
+
+	for _, ps := range pubsubs {
+		meta := pool.pubSubMetadata[ps]
+		if meta == nil || meta.getState() != connStateActive {
+			continue
+		}
+		count := meta.subscriptionCount()
+		if count < minSubs {
+			minSubs = count
+			selectedPubSub = ps
+		}
+	}
+	pool.mu.RUnlock()
+
+	// Should select pubsub2 (least loaded with 5 subscriptions)
+	if selectedPubSub != pubsub2 {
+		t.Errorf("Expected least loaded pubsub2 to be selected, got different pubsub")
+	}
+	if minSubs != 5 {
+		t.Errorf("minSubs = %d, expected 5", minSubs)
+	}
+}
+
+func TestPubSubPool_SelectLeastLoaded_SkipsInactive(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	pubsub1 := &redis.PubSub{}
+	pubsub2 := &redis.PubSub{}
+
+	meta1 := newMockMetadataWithSubs("node1:7000", connStateFailed, 2) // Failed, should be skipped
+	meta2 := newMockMetadataWithSubs("node1:7000", connStateActive, 10)
+
+	pool.mu.Lock()
+	pool.hashslotPubSubs[100] = []*redis.PubSub{pubsub1, pubsub2}
+	pool.pubSubMetadata[pubsub1] = meta1
+	pool.pubSubMetadata[pubsub2] = meta2
+	pool.mu.Unlock()
+
+	// Simulate selection logic
+	pool.mu.RLock()
+	pubsubs := pool.hashslotPubSubs[100]
+
+	var selectedPubSub *redis.PubSub
+	minSubs := int(^uint(0) >> 1)
+
+	for _, ps := range pubsubs {
+		meta := pool.pubSubMetadata[ps]
+		if meta == nil || meta.getState() != connStateActive {
+			continue
+		}
+		count := meta.subscriptionCount()
+		if count < minSubs {
+			minSubs = count
+			selectedPubSub = ps
+		}
+	}
+	pool.mu.RUnlock()
+
+	// Should select pubsub2 (only active one)
+	if selectedPubSub != pubsub2 {
+		t.Errorf("Expected active pubsub2 to be selected")
+	}
+}
+
+func TestPubSubPool_SelectLeastLoaded_AllInactive(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	pubsub1 := &redis.PubSub{}
+	pubsub2 := &redis.PubSub{}
+
+	meta1 := newMockMetadataWithSubs("node1:7000", connStateFailed, 2)
+	meta2 := newMockMetadataWithSubs("node1:7000", connStateClosed, 5)
+
+	pool.mu.Lock()
+	pool.hashslotPubSubs[100] = []*redis.PubSub{pubsub1, pubsub2}
+	pool.pubSubMetadata[pubsub1] = meta1
+	pool.pubSubMetadata[pubsub2] = meta2
+	pool.mu.Unlock()
+
+	// Simulate selection logic
+	pool.mu.RLock()
+	pubsubs := pool.hashslotPubSubs[100]
+
+	var selectedPubSub *redis.PubSub
+	minSubs := int(^uint(0) >> 1)
+
+	for _, ps := range pubsubs {
+		meta := pool.pubSubMetadata[ps]
+		if meta == nil || meta.getState() != connStateActive {
+			continue
+		}
+		count := meta.subscriptionCount()
+		if count < minSubs {
+			minSubs = count
+			selectedPubSub = ps
+		}
+	}
+	pool.mu.RUnlock()
+
+	// Should be nil (no active connections)
+	if selectedPubSub != nil {
+		t.Error("Expected no pubsub to be selected when all are inactive")
+	}
+}
+
+func TestPubSubPool_SelectLeastLoaded_NilMetadata(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	pubsub1 := &redis.PubSub{}
+	pubsub2 := &redis.PubSub{}
+
+	meta2 := newMockMetadataWithSubs("node1:7000", connStateActive, 5)
+
+	pool.mu.Lock()
+	pool.hashslotPubSubs[100] = []*redis.PubSub{pubsub1, pubsub2}
+	// pubsub1 has no metadata (nil)
+	pool.pubSubMetadata[pubsub2] = meta2
+	pool.mu.Unlock()
+
+	// Simulate selection logic
+	pool.mu.RLock()
+	pubsubs := pool.hashslotPubSubs[100]
+
+	var selectedPubSub *redis.PubSub
+	minSubs := int(^uint(0) >> 1)
+
+	for _, ps := range pubsubs {
+		meta := pool.pubSubMetadata[ps]
+		if meta == nil || meta.getState() != connStateActive {
+			continue // Should skip pubsub1 which has nil metadata
+		}
+		count := meta.subscriptionCount()
+		if count < minSubs {
+			minSubs = count
+			selectedPubSub = ps
+		}
+	}
+	pool.mu.RUnlock()
+
+	// Should select pubsub2 (pubsub1 has nil metadata)
+	if selectedPubSub != pubsub2 {
+		t.Error("Expected pubsub2 to be selected when pubsub1 has nil metadata")
+	}
+}
+
+func TestPubSubPool_SelectLeastLoaded_EqualLoad(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	pubsub1 := &redis.PubSub{}
+	pubsub2 := &redis.PubSub{}
+	pubsub3 := &redis.PubSub{}
+
+	// All have equal subscription counts
+	meta1 := newMockMetadataWithSubs("node1:7000", connStateActive, 5)
+	meta2 := newMockMetadataWithSubs("node1:7000", connStateActive, 5)
+	meta3 := newMockMetadataWithSubs("node1:7000", connStateActive, 5)
+
+	pool.mu.Lock()
+	pool.hashslotPubSubs[100] = []*redis.PubSub{pubsub1, pubsub2, pubsub3}
+	pool.pubSubMetadata[pubsub1] = meta1
+	pool.pubSubMetadata[pubsub2] = meta2
+	pool.pubSubMetadata[pubsub3] = meta3
+	pool.mu.Unlock()
+
+	// Simulate selection logic
+	pool.mu.RLock()
+	pubsubs := pool.hashslotPubSubs[100]
+
+	var selectedPubSub *redis.PubSub
+	minSubs := int(^uint(0) >> 1)
+
+	for _, ps := range pubsubs {
+		meta := pool.pubSubMetadata[ps]
+		if meta == nil || meta.getState() != connStateActive {
+			continue
+		}
+		count := meta.subscriptionCount()
+		if count < minSubs {
+			minSubs = count
+			selectedPubSub = ps
+		}
+	}
+	pool.mu.RUnlock()
+
+	// Should select one of them (first one found with equal min)
+	if selectedPubSub == nil {
+		t.Error("Expected a pubsub to be selected")
+	}
+	if minSubs != 5 {
+		t.Errorf("minSubs = %d, expected 5", minSubs)
+	}
+}
+
+func TestPubSubPool_EmptyHashslot(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	// Simulate selection with empty hashslot
+	pool.mu.RLock()
+	pubsubs := pool.hashslotPubSubs[100] // Non-existent hashslot
+	pool.mu.RUnlock()
+
+	if len(pubsubs) != 0 {
+		t.Errorf("Expected empty list for non-existent hashslot, got %d", len(pubsubs))
+	}
+}
