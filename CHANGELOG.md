@@ -2,6 +2,20 @@
 
 All notable changes to the submux project will be documented in this file.
 
+## [2.1.0] - 2026-01-09
+
+### Added
+- **Real-time MOVED/ASK Detection**: Subscription commands now detect MOVED/ASK redirect errors and immediately trigger topology refresh, reducing migration detection latency.
+- **Robust Test Cleanup**: PID file tracking (`testdata/.redis-test-pids`) ensures orphaned redis-server processes are killed on next test run, even after forceful interruption.
+- **Parallel Test Execution**: Integration tests with dedicated clusters now use `t.Parallel()` for faster execution (~8s vs ~50s previously).
+
+### Changed
+- **Signal Handler**: Now handles SIGQUIT in addition to SIGINT/SIGTERM.
+- **Test Infrastructure**: Improved process group isolation and cleanup reliability.
+
+### Fixed
+- **Orphaned Processes**: Tests no longer leave redis-server processes running after interruption (Ctrl+C, timeout, kill).
+
 ## [2.0.0] - 2026-01-06
 
 ### Changed
