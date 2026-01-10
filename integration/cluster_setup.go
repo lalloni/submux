@@ -772,7 +772,68 @@ func (tc *TestCluster) MigrateHashslot(ctx context.Context, slot int, targetNode
 		client.Close()
 	}
 
+	// Step 5: Wait for cluster to converge on the new topology
+	// This ensures all nodes report the same slot owner before returning
+	if err := tc.waitForSlotConvergence(ctx, slot, targetNode); err != nil {
+		return fmt.Errorf("cluster failed to converge after migration: %w", err)
+	}
+
 	return nil
+}
+
+// waitForSlotConvergence waits until all master nodes agree on the owner of a slot.
+func (tc *TestCluster) waitForSlotConvergence(ctx context.Context, slot int, expectedOwner string) error {
+	timeout := 3 * time.Second
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		allAgree := true
+		for _, node := range tc.GetNodes() {
+			owner, err := tc.getSlotOwnerFromNode(ctx, node.Address, slot)
+			if err != nil {
+				allAgree = false
+				break
+			}
+			if owner != expectedOwner {
+				allAgree = false
+				break
+			}
+		}
+
+		if allAgree {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+			// Continue polling
+		}
+	}
+
+	return fmt.Errorf("timeout waiting for slot %d to converge to owner %s", slot, expectedOwner)
+}
+
+// getSlotOwnerFromNode queries a specific node for who owns a slot.
+func (tc *TestCluster) getSlotOwnerFromNode(ctx context.Context, nodeAddr string, slot int) (string, error) {
+	client := redis.NewClient(&redis.Options{Addr: nodeAddr})
+	defer client.Close()
+
+	slots, err := client.ClusterSlots(ctx).Result()
+	if err != nil {
+		return "", err
+	}
+
+	for _, slotRange := range slots {
+		if slot >= int(slotRange.Start) && slot <= int(slotRange.End) {
+			if len(slotRange.Nodes) > 0 {
+				return slotRange.Nodes[0].Addr, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("slot %d not found in cluster slots", slot)
 }
 
 // getNodeID gets the node ID for a given node address by querying CLUSTER NODES.

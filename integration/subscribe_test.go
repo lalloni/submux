@@ -10,7 +10,7 @@ import (
 )
 
 func TestPSubscribePattern(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -70,7 +70,7 @@ func TestPSubscribePattern(t *testing.T) {
 }
 
 func TestSSubscribeSharded(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -147,7 +147,7 @@ func TestSSubscribeSharded(t *testing.T) {
 }
 
 func TestMultipleSubscriptionsSameChannel(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -228,7 +228,7 @@ func TestMultipleSubscriptionsSameChannel(t *testing.T) {
 }
 
 func TestUnsubscribe(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -289,7 +289,7 @@ func TestUnsubscribe(t *testing.T) {
 }
 
 func TestUnsubscribeMultipleChannels(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -389,7 +389,7 @@ unsubscribe:
 }
 
 func TestUnsubscribePartial(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)

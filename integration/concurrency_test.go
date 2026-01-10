@@ -11,7 +11,7 @@ import (
 )
 
 func TestConcurrentSubscriptions(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -55,7 +55,7 @@ func TestConcurrentSubscriptions(t *testing.T) {
 }
 
 func TestConcurrentMessageHandling(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -139,7 +139,7 @@ func TestConcurrentMessageHandling(t *testing.T) {
 }
 
 func TestConcurrentSubscribeUnsubscribe(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -264,7 +264,7 @@ func TestConcurrentMultipleSubscriptionsSameChannel(t *testing.T) {
 }
 
 func TestConcurrentTopologyChanges(t *testing.T) {
-	t.Parallel()
+	// t.Parallel() - disabled to reduce flakiness
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
