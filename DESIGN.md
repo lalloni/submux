@@ -77,11 +77,17 @@ PubSub Connection
 submux includes advanced logic to handle the dynamic nature of Redis Clusters.
 
 ### 3.1 Topology Change Detection
-The `Topology Monitor` (`topology.go`) runs in the background:
+submux uses two complementary mechanisms to detect topology changes:
+
+**Periodic Polling** - The `Topology Monitor` (`topology.go`) runs in the background:
 *   **Polling**: Refreshes cluster state at configurable intervals (default 1s). It calls `ClusterClient.ReloadState()` followed by `ClusterSlots()`.
 *   **Diffing**: Compares new topology with previous state to detect:
     *   Hashslot migrations (slots moving between nodes).
     *   Node failures/additions.
+
+**Real-time MOVED/ASK Detection** - The Event Loop (`eventloop.go`) detects redirect errors:
+*   When a subscription command returns a MOVED or ASK error, `checkAndHandleRedirect()` immediately triggers a topology refresh via `topologyMonitor.triggerRefresh()`.
+*   This provides faster migration detection than waiting for the next poll interval.
 
 ### 3.2 Migration Recovery (`auto-resubscribe`)
 When a hashslot migration is detected:

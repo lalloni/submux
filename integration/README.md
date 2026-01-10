@@ -39,7 +39,7 @@ go test ./integration/topology_test.go -v
 go test ./integration/... -v -run TestAutoResubscribeMigration
 ```
 
-> **Note**: Tests typically take **20-50 seconds** to complete as they spin up real clusters.
+> **Note**: Tests typically complete in **~8 seconds** due to parallel execution of dedicated cluster tests.
 
 ## 🔧 Infrastructure
 
@@ -49,6 +49,8 @@ The test harness (`cluster_setup.go`) handles the complexity of managing Redis c
 2.  **Topology Generation**: Creates 3-shard clusters (1 Master + 2 Replicas each = 9 nodes total).
 3.  **Event-Driven**: Uses polling for cluster readiness rather than fixed sleeps.
 4.  **Auto Cleanup**: Tears down processes and deletes temporary data directories (`testdata/`) after tests.
+5.  **Robust Orphan Cleanup**: PID file tracking (`testdata/.redis-test-pids`) ensures orphaned processes from interrupted runs are killed on next test startup.
+6.  **Signal Handling**: Handles SIGINT, SIGTERM, and SIGQUIT for graceful cleanup on interruption.
 
 ### Directory Structure
 ```
