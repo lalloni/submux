@@ -186,6 +186,25 @@ func (tm *topologyMonitor) stop() {
 	tm.wg.Wait()
 }
 
+// triggerRefresh triggers an immediate topology refresh in response to a MOVED/ASK error.
+// This is called asynchronously to avoid blocking the event loop.
+// The redirectAddr parameter is the address Redis told us to redirect to.
+func (tm *topologyMonitor) triggerRefresh(redirectAddr string, isMoved bool) {
+	// Log the redirect detection
+	if isMoved {
+		tm.config.logger.Info("submux: MOVED redirect detected, triggering topology refresh", "redirect_addr", redirectAddr)
+	} else {
+		tm.config.logger.Info("submux: ASK redirect detected, triggering topology refresh", "redirect_addr", redirectAddr)
+	}
+
+	// Perform refresh asynchronously to avoid blocking the caller
+	go func() {
+		if err := tm.refreshTopology(); err != nil {
+			tm.config.logger.Error("submux: topology refresh after redirect failed", "error", err)
+		}
+	}()
+}
+
 // monitor is the main monitoring loop.
 func (tm *topologyMonitor) monitor() {
 	defer tm.wg.Done()

@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net"
@@ -19,25 +20,171 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const (
+	// pidFileName is the name of the file that tracks Redis process PIDs
+	pidFileName = ".redis-test-pids"
+)
+
 var (
 	// Global registry of all active test clusters
 	activeClusters    = make(map[*TestCluster]struct{})
 	activeClustersMu  sync.Mutex
 	signalHandlerOnce sync.Once
+	cleanupOnce       sync.Once
+	pidFilePath       string
+	pidFileMu         sync.Mutex
 )
+
+// getPidFilePathLocked returns the path to the PID file. Caller must hold pidFileMu.
+func getPidFilePathLocked() string {
+	if pidFilePath == "" {
+		baseTestDataDir := filepath.Join(".", "testdata")
+		_ = os.MkdirAll(baseTestDataDir, 0755)
+		pidFilePath = filepath.Join(baseTestDataDir, pidFileName)
+	}
+	return pidFilePath
+}
+
+// recordPid records a Redis server PID to the PID file for cleanup tracking.
+func recordPid(pid int) error {
+	pidFileMu.Lock()
+	defer pidFileMu.Unlock()
+
+	f, err := os.OpenFile(getPidFilePathLocked(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = fmt.Fprintf(f, "%d\n", pid)
+	return err
+}
+
+// removePid removes a PID from the PID file after successful cleanup.
+func removePid(pid int) {
+	pidFileMu.Lock()
+	defer pidFileMu.Unlock()
+
+	path := getPidFilePathLocked()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var newLines []string
+	pidStr := strconv.Itoa(pid)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && line != pidStr {
+			newLines = append(newLines, line)
+		}
+	}
+
+	if len(newLines) == 0 {
+		os.Remove(path)
+	} else {
+		os.WriteFile(path, []byte(strings.Join(newLines, "\n")+"\n"), 0644)
+	}
+}
+
+// killOrphanedProcesses reads the PID file and kills any orphaned Redis processes
+// from previous test runs that weren't properly cleaned up.
+func killOrphanedProcesses() {
+	pidFileMu.Lock()
+	path := getPidFilePathLocked()
+	pidFileMu.Unlock()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // No PID file, nothing to clean up
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	var killedPids []int
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		pid, err := strconv.Atoi(line)
+		if err != nil {
+			continue
+		}
+
+		// Check if process exists by sending signal 0
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			killedPids = append(killedPids, pid)
+			continue
+		}
+
+		// Check if the process is still running
+		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			// Process doesn't exist
+			killedPids = append(killedPids, pid)
+			continue
+		}
+
+		// Try to check if it's actually a redis-server process
+		// by reading /proc/pid/comm on Linux
+		commPath := fmt.Sprintf("/proc/%d/comm", pid)
+		if commData, err := os.ReadFile(commPath); err == nil {
+			comm := strings.TrimSpace(string(commData))
+			if comm != "redis-server" {
+				// Not a redis-server, remove from tracking
+				killedPids = append(killedPids, pid)
+				continue
+			}
+		}
+
+		// Kill the orphaned redis-server process
+		fmt.Fprintf(os.Stderr, "=== Killing orphaned redis-server process (PID %d) ===\n", pid)
+
+		// First try SIGTERM for graceful shutdown
+		_ = proc.Signal(syscall.SIGTERM)
+
+		// Wait briefly for graceful shutdown
+		time.Sleep(100 * time.Millisecond)
+
+		// Check if still running, force kill if needed
+		if err := proc.Signal(syscall.Signal(0)); err == nil {
+			// Still running, use SIGKILL
+			_ = syscall.Kill(-pid, syscall.SIGKILL) // Kill process group
+			_ = proc.Kill()
+		}
+
+		killedPids = append(killedPids, pid)
+	}
+
+	// Remove killed PIDs from file
+	for _, pid := range killedPids {
+		removePid(pid)
+	}
+}
 
 // initSignalHandler sets up a global signal handler that cleans up all active clusters.
 // This is called once and handles signals for all clusters created during testing.
 func initSignalHandler() {
 	signalHandlerOnce.Do(func() {
+		// First, kill any orphaned processes from previous runs
+		killOrphanedProcesses()
+
 		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 		go func() {
-			<-sigChan
-			fmt.Fprintln(os.Stderr, "\n=== Received interrupt signal, cleaning up all test clusters ===")
-			cleanupAllClusters()
+			sig := <-sigChan
+			fmt.Fprintf(os.Stderr, "\n=== Received signal %v, cleaning up all test clusters ===\n", sig)
+			doCleanup()
 			os.Exit(1)
 		}()
+	})
+}
+
+// doCleanup performs the actual cleanup, ensuring it only runs once.
+func doCleanup() {
+	cleanupOnce.Do(func() {
+		cleanupAllClusters()
 	})
 }
 
@@ -201,6 +348,12 @@ dir %s
 		if err := cmd.Start(); err != nil {
 			cluster.StopCluster(ctx)
 			return nil, fmt.Errorf("failed to start redis-server on port %d: %w", port, err)
+		}
+
+		// Record PID for orphan cleanup tracking
+		if err := recordPid(cmd.Process.Pid); err != nil {
+			// Non-fatal, just log
+			fmt.Fprintf(os.Stderr, "Warning: failed to record PID %d: %v\n", cmd.Process.Pid, err)
 		}
 
 		cluster.processes = append(cluster.processes, cmd)
@@ -391,7 +544,9 @@ func (tc *TestCluster) StopCluster(ctx context.Context) error {
 
 		// First, try graceful shutdown with SIGTERM
 		if err := proc.Signal(syscall.SIGTERM); err != nil {
-			// Process might already be dead, continue
+			// Process might already be dead, remove from PID file and continue
+			removePid(pid)
+			continue
 		}
 
 		// Wait for process to exit with timeout
@@ -402,7 +557,8 @@ func (tc *TestCluster) StopCluster(ctx context.Context) error {
 
 		select {
 		case <-done:
-			// Process exited
+			// Process exited successfully
+			removePid(pid)
 		case <-time.After(2 * time.Second):
 			// Process didn't exit, force kill
 			// Kill the process group to ensure all child processes are killed
@@ -413,8 +569,11 @@ func (tc *TestCluster) StopCluster(ctx context.Context) error {
 			// Wait a bit more for the kill to take effect
 			select {
 			case <-done:
+				removePid(pid)
 			case <-time.After(1 * time.Second):
-				// Process still not dead, log but continue
+				// Process still not dead, but remove from tracking anyway
+				// The next test run will try to clean it up
+				removePid(pid)
 			}
 		}
 	}
@@ -510,6 +669,7 @@ func (tc *TestCluster) StopNode(nodeAddr string) error {
 				select {
 				case <-done:
 					// Process exited
+					removePid(pid)
 				case <-time.After(2 * time.Second):
 					// Process didn't exit, force kill
 					_ = syscall.Kill(-pid, syscall.SIGKILL)
@@ -518,6 +678,7 @@ func (tc *TestCluster) StopNode(nodeAddr string) error {
 					case <-done:
 					case <-time.After(1 * time.Second):
 					}
+					removePid(pid)
 				}
 
 				return nil

@@ -94,8 +94,8 @@ func TestHighSubscriptionCount_MemoryUsage(t *testing.T) {
 	runtime.GC()
 	runtime.ReadMemStats(&m1)
 
-	// Subscribe to 5000 channels
-	numChannels := 5000
+	// Subscribe to 10000 channels
+	numChannels := 10000
 	channels := make([]string, numChannels)
 	for i := 0; i < numChannels; i++ {
 		channels[i] = uniqueChannel(fmt.Sprintf("mem-%d", i))

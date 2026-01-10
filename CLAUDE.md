@@ -215,13 +215,23 @@ The `Sub` type represents a subscription handle returned by all subscription met
 
 ### Hashslot Migration Detection
 
-The topology monitor polls at regular intervals (default 1s, configurable via `WithTopologyPollInterval`):
+submux uses two complementary mechanisms to detect topology changes:
+
+**1. Periodic Polling** (default 1s, configurable via `WithTopologyPollInterval`):
 1. Calls `ClusterClient.ReloadState()` to refresh cluster state
 2. Calls `ClusterSlots()` to get current topology
 3. Diffs against previous topology to detect:
    - Hashslot ownership changes (migrations)
    - Node additions/removals
 4. For each migrated hashslot, invalidates pool cache and triggers auto-resubscribe if enabled
+
+**2. Real-time MOVED/ASK Detection** (`eventloop.go`):
+When a subscription command fails with a MOVED or ASK error:
+1. `checkAndHandleRedirect()` detects the error using `redis.IsMovedError()` / `redis.IsAskError()`
+2. Immediately triggers `topologyMonitor.triggerRefresh()` for faster topology update
+3. This ensures migrations are detected without waiting for the next poll interval
+
+The combination provides both reliable periodic updates and fast reaction to actual redirects
 
 ## Code Conventions
 

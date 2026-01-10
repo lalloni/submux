@@ -86,22 +86,51 @@ func sendRedisCommand(meta *pubSubMetadata, cmd *command) error {
 		args[i] = arg.(string)
 	}
 
+	var err error
 	switch cmd.cmd {
-
 	case cmdSubscribe:
-		return meta.pubsub.Subscribe(ctx, args...)
+		err = meta.pubsub.Subscribe(ctx, args...)
 	case cmdPSubscribe:
-		return meta.pubsub.PSubscribe(ctx, args...)
+		err = meta.pubsub.PSubscribe(ctx, args...)
 	case cmdSSubscribe:
-		return meta.pubsub.SSubscribe(ctx, args...)
+		err = meta.pubsub.SSubscribe(ctx, args...)
 	case cmdUnsubscribe:
-		return meta.pubsub.Unsubscribe(ctx, args...)
+		err = meta.pubsub.Unsubscribe(ctx, args...)
 	case cmdPUnsubscribe:
-		return meta.pubsub.PUnsubscribe(ctx, args...)
+		err = meta.pubsub.PUnsubscribe(ctx, args...)
 	case cmdSUnsubscribe:
-		return meta.pubsub.SUnsubscribe(ctx, args...)
+		err = meta.pubsub.SUnsubscribe(ctx, args...)
 	default:
 		return fmt.Errorf("unknown command: %s", cmd.cmd)
+	}
+
+	// Check for MOVED/ASK redirect errors and trigger topology refresh
+	if err != nil {
+		checkAndHandleRedirect(meta, err)
+	}
+
+	return err
+}
+
+// checkAndHandleRedirect checks if an error is a MOVED or ASK redirect error
+// and triggers a topology refresh if so.
+func checkAndHandleRedirect(meta *pubSubMetadata, err error) {
+	if meta.onRedirectDetected == nil {
+		return
+	}
+
+	// Check for MOVED error (permanent redirect - slot moved to another node)
+	if addr, ok := redis.IsMovedError(err); ok {
+		meta.logger.Debug("submux: detected MOVED error", "redirect_addr", addr)
+		meta.onRedirectDetected(addr, true)
+		return
+	}
+
+	// Check for ASK error (temporary redirect - slot being migrated)
+	if addr, ok := redis.IsAskError(err); ok {
+		meta.logger.Debug("submux: detected ASK error", "redirect_addr", addr)
+		meta.onRedirectDetected(addr, false)
+		return
 	}
 }
 
