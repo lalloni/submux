@@ -19,6 +19,12 @@ type config struct {
 	// topologyPollInterval sets how often to poll the cluster topology for changes.
 	topologyPollInterval time.Duration
 
+	// migrationTimeout is the maximum duration to wait for migration resubscription to complete.
+	migrationTimeout time.Duration
+
+	// migrationStallCheck is how often to check for stalled migration resubscription progress.
+	migrationStallCheck time.Duration
+
 	// logger is the structured logger to use.
 	logger *slog.Logger
 }
@@ -29,7 +35,9 @@ func defaultConfig() *config {
 		autoResubscribe:       false,
 		minConnectionsPerNode: 1,
 		replicaPreference:     false,
-		topologyPollInterval:  1 * time.Second, // Default: poll at least once per second
+		topologyPollInterval:  1 * time.Second,  // Default: poll at least once per second
+		migrationTimeout:      30 * time.Second, // Default: 30s max for migration resubscription
+		migrationStallCheck:   2 * time.Second,  // Default: check for stalls every 2s
 		logger:                slog.Default(),
 	}
 }
@@ -78,5 +86,29 @@ func WithTopologyPollInterval(interval time.Duration) Option {
 			interval = 100 * time.Millisecond
 		}
 		c.topologyPollInterval = interval
+	}
+}
+
+// WithMigrationTimeout sets the maximum duration to wait for migration resubscription
+// to complete before timing out. Default is 30 seconds.
+func WithMigrationTimeout(timeout time.Duration) Option {
+	return func(c *config) {
+		if timeout < 1*time.Second {
+			// Enforce minimum timeout of 1 second
+			timeout = 1 * time.Second
+		}
+		c.migrationTimeout = timeout
+	}
+}
+
+// WithMigrationStallCheck sets how often to check for stalled migration resubscription
+// progress. Default is 2 seconds.
+func WithMigrationStallCheck(interval time.Duration) Option {
+	return func(c *config) {
+		if interval < 100*time.Millisecond {
+			// Enforce minimum interval of 100ms
+			interval = 100 * time.Millisecond
+		}
+		c.migrationStallCheck = interval
 	}
 }

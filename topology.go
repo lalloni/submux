@@ -466,10 +466,8 @@ func (tm *topologyMonitor) sendMigrationStalledSignal(subs []*subscription, migr
 // resubscribeOnNewNodeWithMonitoring recreates subscriptions on the new node after migration
 // with progress monitoring to detect timeouts and stalls.
 func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscription, migration hashslotMigration) {
-	const (
-		maxMigrationDuration = 30 * time.Second
-		stallCheckInterval   = 2 * time.Second
-	)
+	migrationTimeout := tm.config.migrationTimeout
+	stallCheckInterval := tm.config.migrationStallCheck
 
 	startTime := time.Now()
 	lastProgressTime := startTime
@@ -497,8 +495,8 @@ func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscripti
 				}
 			case <-ticker.C:
 				// Check for timeout
-				if time.Since(startTime) > maxMigrationDuration {
-					tm.sendMigrationTimeoutSignal(subs, migration, maxMigrationDuration)
+				if time.Since(startTime) > migrationTimeout {
+					tm.sendMigrationTimeoutSignal(subs, migration, migrationTimeout)
 					return
 				}
 

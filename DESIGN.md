@@ -128,8 +128,10 @@ func (sm *SubMux) SSubscribeSync(ctx context.Context, patterns []string, cb Mess
 Configured via functional options in `New()`:
 *   `WithAutoResubscribe(bool)`: Enable automatic handling of migrations.
 *   `WithReplicaPreference(bool)`: Prefer connecting to replicas to save master bandwidth.
-*   `WithTopologyPollInterval(time.Duration)`: customized refresh rate.
+*   `WithTopologyPollInterval(time.Duration)`: Customized refresh rate.
 *   `WithMinConnectionsPerNode(int)`: Minimum connection pool size.
+*   `WithMigrationTimeout(time.Duration)`: Maximum duration to wait for migration resubscription (default 30s).
+*   `WithMigrationStallCheck(time.Duration)`: How often to check for stalled migration progress (default 2s).
 
 ---
 
