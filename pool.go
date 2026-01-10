@@ -388,6 +388,15 @@ func (p *pubSubPool) getMetadata(pubsub *redis.PubSub) *pubSubMetadata {
 	return p.pubSubMetadata[pubsub]
 }
 
+// invalidateHashslot removes cached PubSub connections for a hashslot.
+// This is called when a hashslot migration is detected, so future subscriptions
+// will create new connections to the correct node.
+func (p *pubSubPool) invalidateHashslot(hashslot int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.hashslotPubSubs, hashslot)
+}
+
 // getNodeForHashslot returns the node address that owns the given hashslot.
 // It first tries to get it from the topology monitor if available, otherwise falls back to querying ClusterClient.
 func (p *pubSubPool) getNodeForHashslot(ctx context.Context, hashslot int) (string, error) {
