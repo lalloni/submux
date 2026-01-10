@@ -109,7 +109,7 @@ We have successfully completed all 11 phases of the original implementation plan
 - [ ] Add linting (`golangci-lint`).
 
 ### 2. Advanced Topology Handling (Priority: Low)
-- [ ] **Real-time Redirection**: Intercept `MOVED`/`ASK` errors on the command channel directly (currently relies on periodic polling + generic error handling).
+- [x] **Real-time Redirection**: Intercept `MOVED`/`ASK` errors on the command channel directly. When Redis returns a MOVED or ASK error during subscription commands, submux now immediately triggers a topology refresh instead of waiting for the next poll interval.
 - [ ] **Backpressure**: Implement flow control if callbacks are slower than ingestion rate.
 
 ### 3. Performance Tuning (Priority: Low)

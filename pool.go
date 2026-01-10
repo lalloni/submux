@@ -56,6 +56,11 @@ type pubSubMetadata struct {
 	// wg tracks the event loop goroutine.
 	wg sync.WaitGroup
 
+	// onRedirectDetected is called when a MOVED or ASK error is detected.
+	// This allows triggering an immediate topology refresh instead of waiting for polling.
+	// The addr parameter is the redirect target address, isMoved indicates MOVED vs ASK.
+	onRedirectDetected func(addr string, isMoved bool)
+
 	// mu protects subscriptions, pendingSubscriptions, and state.
 	mu sync.RWMutex
 }
@@ -357,6 +362,11 @@ func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 100),
 		done:                 make(chan struct{}),
+	}
+
+	// Set the redirect callback to trigger topology refresh on MOVED/ASK errors
+	if tm != nil {
+		meta.onRedirectDetected = tm.triggerRefresh
 	}
 
 	// Register metadata
