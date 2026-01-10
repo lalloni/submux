@@ -8,10 +8,13 @@ All notable changes to the submux project will be documented in this file.
 - **Real-time MOVED/ASK Detection**: Subscription commands now detect MOVED/ASK redirect errors and immediately trigger topology refresh, reducing migration detection latency.
 - **Robust Test Cleanup**: PID file tracking (`testdata/.redis-test-pids`) ensures orphaned redis-server processes are killed on next test run, even after forceful interruption.
 - **Parallel Test Execution**: Integration tests with dedicated clusters now use `t.Parallel()` for faster execution (~8s vs ~50s previously).
+- **Configurable Migration Timeouts**: New options `WithMigrationTimeout()` and `WithMigrationStallCheck()` allow customizing migration resubscription timeout (default 30s) and stall check interval (default 2s).
 
 ### Changed
 - **Signal Handler**: Now handles SIGQUIT in addition to SIGINT/SIGTERM.
 - **Test Infrastructure**: Improved process group isolation and cleanup reliability.
+- **Encapsulated Pool Operations**: Added `invalidateHashslot()` method to pool for better encapsulation.
+- **Topology Monitor**: Fixed potential nested lock acquisition by copying state reference before releasing lock.
 
 ### Fixed
 - **Orphaned Processes**: Tests no longer leave redis-server processes running after interruption (Ctrl+C, timeout, kill).
