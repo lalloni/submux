@@ -18,6 +18,7 @@ All notable changes to the submux project will be documented in this file.
 
 ### Fixed
 - **Orphaned Processes**: Tests no longer leave redis-server processes running after interruption (Ctrl+C, timeout, kill).
+- **Goroutine Leak in Migration**: Migration resubscription now uses `sync.WaitGroup` to track spawned goroutines and `atomic.Int64` for progress tracking, preventing goroutine leaks when monitoring exits early.
 
 ## [2.0.0] - 2026-01-06
 
