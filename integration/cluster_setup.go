@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -24,6 +25,31 @@ const (
 	// pidFileName is the name of the file that tracks Redis process PIDs
 	pidFileName = ".redis-test-pids"
 )
+
+// syncBuffer is a thread-safe buffer for capturing process output.
+// It wraps bytes.Buffer with a mutex to allow concurrent writes from stdout and stderr.
+type syncBuffer struct {
+	buf bytes.Buffer
+	mu  sync.Mutex
+}
+
+func (sb *syncBuffer) Write(p []byte) (n int, err error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *syncBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
+}
+
+func (sb *syncBuffer) Len() int {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Len()
+}
 
 var (
 	// Global registry of all active test clusters
@@ -242,11 +268,13 @@ type TestCluster struct {
 	name             string // Name used to identify this cluster
 	nodes            []*TestNode
 	processes        []*exec.Cmd
+	processOutputs   []*syncBuffer // Captured stdout/stderr for each process
 	dataDirs         []string
 	testDataDir      string // Parent directory containing all node data dirs
 	numShards        int
 	replicasPerShard int
 	clusterClient    *redis.ClusterClient
+	clusterInitOut   string // Output from redis-cli cluster init
 	mu               sync.Mutex
 }
 
@@ -289,6 +317,7 @@ func StartCluster(ctx context.Context, numShards, replicasPerShard int, clusterN
 		name:             clusterName,
 		nodes:            make([]*TestNode, 0, numNodes),
 		processes:        make([]*exec.Cmd, 0, numNodes),
+		processOutputs:   make([]*syncBuffer, 0, numNodes),
 		dataDirs:         make([]string, 0, numNodes),
 		testDataDir:      testDataDir,
 		numShards:        numShards,
@@ -338,14 +367,21 @@ dir %s
 
 		// Start redis-server process
 		cmd := exec.CommandContext(ctx, "redis-server", configFile)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+
+		// Capture output in memory using thread-safe buffer
+		// This allows concurrent writes from both stdout and stderr
+		outputBuf := &syncBuffer{}
+		cmd.Stdout = outputBuf
+		cmd.Stderr = outputBuf
+
 		// Set process group so we can kill the entire process tree
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Setpgid: true,
 		}
 
 		if err := cmd.Start(); err != nil {
+			// On error, print the captured output for debugging
+			fmt.Fprintf(os.Stderr, "Failed to start redis-server on port %d:\n%s\n", port, outputBuf.String())
 			cluster.StopCluster(ctx)
 			return nil, fmt.Errorf("failed to start redis-server on port %d: %w", port, err)
 		}
@@ -357,16 +393,19 @@ dir %s
 		}
 
 		cluster.processes = append(cluster.processes, cmd)
+		cluster.processOutputs = append(cluster.processOutputs, outputBuf)
 	}
 
 	// Wait for all Redis instances to be ready
 	if err := cluster.waitForNodesReady(ctx, 10*time.Second); err != nil {
+		cluster.DumpProcessOutput()
 		cluster.StopCluster(ctx)
 		return nil, fmt.Errorf("nodes not ready: %w", err)
 	}
 
 	// Initialize cluster using redis-cli (this waits for cluster to be ready)
 	if err := cluster.initializeCluster(ctx); err != nil {
+		cluster.DumpProcessOutput()
 		cluster.StopCluster(ctx)
 		return nil, fmt.Errorf("failed to initialize cluster: %w", err)
 	}
@@ -383,6 +422,7 @@ dir %s
 
 	// Quick sanity check - initializeCluster already verified cluster is ready
 	if err := clusterClient.Ping(ctx).Err(); err != nil {
+		cluster.DumpProcessOutput()
 		cluster.StopCluster(ctx)
 		return nil, fmt.Errorf("cluster client ping failed: %w", err)
 	}
@@ -455,10 +495,13 @@ func (tc *TestCluster) initializeCluster(ctx context.Context) error {
 
 	cmd := exec.CommandContext(ctx, "redis-cli", args...)
 	output, err := cmd.CombinedOutput()
-	// Always log output for debugging
-	fmt.Printf("redis-cli --cluster create output:\n%s\n", string(output))
+
+	// Store output for later inspection if needed
+	tc.clusterInitOut = string(output)
 
 	if err != nil {
+		// Only print output on error
+		fmt.Fprintf(os.Stderr, "redis-cli --cluster create failed:\n%s\n", string(output))
 		return fmt.Errorf("failed to initialize cluster: %w.\nCommand: %s", err, cmd.String())
 	}
 
@@ -643,6 +686,55 @@ func (tc *TestCluster) GetNodes() []*TestNode {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 	return tc.nodes
+}
+
+// DumpProcessOutput writes the captured output from all redis-server processes to stderr.
+// This is useful for debugging test failures.
+func (tc *TestCluster) DumpProcessOutput() {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	fmt.Fprintf(os.Stderr, "\n=== Redis Cluster Output Dump: %s ===\n", tc.name)
+
+	if tc.clusterInitOut != "" {
+		fmt.Fprintf(os.Stderr, "\n--- redis-cli --cluster create output ---\n%s\n", tc.clusterInitOut)
+	}
+
+	for i, buf := range tc.processOutputs {
+		if buf != nil && buf.Len() > 0 {
+			nodeDesc := "unknown"
+			if i < len(tc.nodes) {
+				nodeDesc = tc.nodes[i].Address
+			}
+			fmt.Fprintf(os.Stderr, "\n--- redis-server node %d (%s) ---\n%s\n", i, nodeDesc, buf.String())
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "=== End Redis Cluster Output Dump ===\n\n")
+}
+
+// GetProcessOutput returns the captured output for a specific node index.
+// Returns empty string if the index is out of range.
+func (tc *TestCluster) GetProcessOutput(nodeIndex int) string {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	if nodeIndex < 0 || nodeIndex >= len(tc.processOutputs) {
+		return ""
+	}
+
+	if tc.processOutputs[nodeIndex] == nil {
+		return ""
+	}
+
+	return tc.processOutputs[nodeIndex].String()
+}
+
+// GetClusterInitOutput returns the output from the redis-cli cluster initialization.
+func (tc *TestCluster) GetClusterInitOutput() string {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	return tc.clusterInitOut
 }
 
 // StopNode stops a specific node by address.
@@ -958,6 +1050,11 @@ func setupTestCluster(t testing.TB, numShards, replicasPerShard int) *TestCluste
 
 	// Cleanup on test completion
 	t.Cleanup(func() {
+		// If test failed, dump the Redis cluster output for debugging
+		if t.Failed() {
+			cluster.DumpProcessOutput()
+		}
+
 		if err := cluster.StopCluster(context.Background()); err != nil {
 			t.Logf("Error stopping test cluster: %v", err)
 		}

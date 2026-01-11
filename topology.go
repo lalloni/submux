@@ -335,9 +335,9 @@ func (tm *topologyMonitor) refreshTopology() error {
 
 	// Handle detected migrations
 	if len(migrations) > 0 {
-		tm.config.logger.Info("submux: detected migrations", "count", len(migrations))
+		tm.config.logger.Debug("submux: detected migrations", "count", len(migrations))
 		for _, m := range migrations {
-			tm.config.logger.Info("submux: migration", "slot", m.hashslot, "old_node", m.oldNode, "new_node", m.newNode)
+			tm.config.logger.Debug("submux: migration", "slot", m.hashslot, "old_node", m.oldNode, "new_node", m.newNode)
 		}
 		tm.handleMigrations(migrations)
 	}

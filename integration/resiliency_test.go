@@ -72,7 +72,7 @@ func (tc *TestCluster) StartNode(ctx context.Context, nodeAddr string) error {
 }
 
 func TestReplicaFailure_Recovery(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel() // Dedicated cluster - safe to run in parallel
 	// Use 6 nodes (3 shards: 1 master + 1 replica each) which is enough for replica failure test
 	cluster := setupTestCluster(t, 3, 2)
 	client := cluster.GetClusterClient()
@@ -223,7 +223,7 @@ RecoveryLoop:
 }
 
 func TestRollingRestart_Stability(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel() // Dedicated cluster - safe to run in parallel
 	cluster := setupTestCluster(t, 3, 2)
 	client := cluster.GetClusterClient()
 
