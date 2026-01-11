@@ -1,6 +1,7 @@
 package submux
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"sync"
@@ -187,8 +188,15 @@ func TestProcessResponse_RegularMessage(t *testing.T) {
 	meta := newTestMetadata()
 
 	var receivedMsg *Message
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(1)
+
 	callback := func(msg *Message) {
+		mu.Lock()
 		receivedMsg = msg
+		mu.Unlock()
+		wg.Done()
 	}
 
 	// Add a subscription for the channel
@@ -212,9 +220,11 @@ func TestProcessResponse_RegularMessage(t *testing.T) {
 		t.Errorf("processResponse returned error: %v", err)
 	}
 
-	// Give async callback time to execute
-	time.Sleep(10 * time.Millisecond)
+	// Wait for async callback
+	wg.Wait()
 
+	mu.Lock()
+	defer mu.Unlock()
 	if receivedMsg == nil {
 		t.Fatal("callback not invoked")
 	}
@@ -233,8 +243,15 @@ func TestProcessResponse_PatternMessage(t *testing.T) {
 	meta := newTestMetadata()
 
 	var receivedMsg *Message
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(1)
+
 	callback := func(msg *Message) {
+		mu.Lock()
 		receivedMsg = msg
+		mu.Unlock()
+		wg.Done()
 	}
 
 	// Add a pattern subscription
@@ -258,9 +275,11 @@ func TestProcessResponse_PatternMessage(t *testing.T) {
 		t.Errorf("processResponse returned error: %v", err)
 	}
 
-	// Give async callback time to execute
-	time.Sleep(10 * time.Millisecond)
+	// Wait for async callback
+	wg.Wait()
 
+	mu.Lock()
+	defer mu.Unlock()
 	if receivedMsg == nil {
 		t.Fatal("callback not invoked")
 	}
@@ -279,8 +298,15 @@ func TestProcessResponse_ShardedMessage(t *testing.T) {
 	meta := newTestMetadata()
 
 	var receivedMsg *Message
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(1)
+
 	callback := func(msg *Message) {
+		mu.Lock()
 		receivedMsg = msg
+		mu.Unlock()
+		wg.Done()
 	}
 
 	// Add a sharded subscription
@@ -304,9 +330,11 @@ func TestProcessResponse_ShardedMessage(t *testing.T) {
 		t.Errorf("processResponse returned error: %v", err)
 	}
 
-	// Give async callback time to execute
-	time.Sleep(10 * time.Millisecond)
+	// Wait for async callback
+	wg.Wait()
 
+	mu.Lock()
+	defer mu.Unlock()
 	if receivedMsg == nil {
 		t.Fatal("callback not invoked")
 	}
@@ -500,10 +528,19 @@ func TestHandleMessageFromPubSub(t *testing.T) {
 	meta := newTestMetadata()
 
 	var received *Message
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(1)
+
 	sub := &subscription{
-		channel:  "ch1",
-		callback: func(msg *Message) { received = msg },
-		subType:  subTypeSubscribe,
+		channel: "ch1",
+		callback: func(msg *Message) {
+			mu.Lock()
+			received = msg
+			mu.Unlock()
+			wg.Done()
+		},
+		subType: subTypeSubscribe,
 	}
 	meta.subscriptions["ch1"] = []*subscription{sub}
 
@@ -513,8 +550,10 @@ func TestHandleMessageFromPubSub(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 
-	time.Sleep(10 * time.Millisecond)
+	wg.Wait()
 
+	mu.Lock()
+	defer mu.Unlock()
 	if received == nil {
 		t.Fatal("callback not called")
 	}
@@ -533,10 +572,19 @@ func TestHandlePMessageFromPubSub(t *testing.T) {
 	meta := newTestMetadata()
 
 	var received *Message
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(1)
+
 	sub := &subscription{
-		channel:  "pat*",
-		callback: func(msg *Message) { received = msg },
-		subType:  subTypePSubscribe,
+		channel: "pat*",
+		callback: func(msg *Message) {
+			mu.Lock()
+			received = msg
+			mu.Unlock()
+			wg.Done()
+		},
+		subType: subTypePSubscribe,
 	}
 	meta.subscriptions["pat*"] = []*subscription{sub}
 
@@ -546,8 +594,10 @@ func TestHandlePMessageFromPubSub(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 
-	time.Sleep(10 * time.Millisecond)
+	wg.Wait()
 
+	mu.Lock()
+	defer mu.Unlock()
 	if received == nil {
 		t.Fatal("callback not called")
 	}
@@ -566,10 +616,19 @@ func TestHandleSMessageFromPubSub(t *testing.T) {
 	meta := newTestMetadata()
 
 	var received *Message
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(1)
+
 	sub := &subscription{
-		channel:  "sharded",
-		callback: func(msg *Message) { received = msg },
-		subType:  subTypeSSubscribe,
+		channel: "sharded",
+		callback: func(msg *Message) {
+			mu.Lock()
+			received = msg
+			mu.Unlock()
+			wg.Done()
+		},
+		subType: subTypeSSubscribe,
 	}
 	meta.subscriptions["sharded"] = []*subscription{sub}
 
@@ -579,8 +638,10 @@ func TestHandleSMessageFromPubSub(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 
-	time.Sleep(10 * time.Millisecond)
+	wg.Wait()
 
+	mu.Lock()
+	defer mu.Unlock()
 	if received == nil {
 		t.Fatal("callback not called")
 	}
@@ -655,5 +716,339 @@ func TestNotifySubscriptionsOfFailure(t *testing.T) {
 		if msg.Signal.EventType != EventNodeFailure {
 			t.Errorf("event type = %v, want %v", msg.Signal.EventType, EventNodeFailure)
 		}
+	}
+}
+
+// Tests for runEventLoop
+
+func TestRunEventLoop_DoneChannelClosed(t *testing.T) {
+	// Create a redis client with invalid address (won't actually connect)
+	client := redis.NewClient(&redis.Options{
+		Addr: "invalid:9999",
+	})
+	defer client.Close()
+
+	pubsub := client.Subscribe(context.Background())
+	defer pubsub.Close()
+
+	meta := &pubSubMetadata{
+		pubsub:               pubsub,
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+		logger:               slog.Default(),
+		nodeAddr:             "test:7000",
+	}
+
+	meta.wg.Add(1)
+
+	// Start event loop in goroutine
+	go runEventLoop(meta)
+
+	// Close done channel to signal shutdown
+	close(meta.done)
+
+	// Wait for goroutine to exit
+	done := make(chan struct{})
+	go func() {
+		meta.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success - event loop exited
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for event loop to exit after done channel closed")
+	}
+}
+
+func TestRunEventLoop_CmdChannelClosed(t *testing.T) {
+	client := redis.NewClient(&redis.Options{
+		Addr: "invalid:9999",
+	})
+	defer client.Close()
+
+	pubsub := client.Subscribe(context.Background())
+	defer pubsub.Close()
+
+	meta := &pubSubMetadata{
+		pubsub:               pubsub,
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+		logger:               slog.Default(),
+		nodeAddr:             "test:7000",
+	}
+
+	meta.wg.Add(1)
+
+	go runEventLoop(meta)
+
+	// Close command channel
+	close(meta.cmdCh)
+
+	done := make(chan struct{})
+	go func() {
+		meta.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for event loop to exit after cmdCh closed")
+	}
+}
+
+func TestRunEventLoop_CommandError_SetsFailedState(t *testing.T) {
+	client := redis.NewClient(&redis.Options{
+		Addr: "invalid:9999",
+	})
+	defer client.Close()
+
+	pubsub := client.Subscribe(context.Background())
+	defer pubsub.Close()
+
+	meta := &pubSubMetadata{
+		pubsub:               pubsub,
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+		logger:               slog.Default(),
+		nodeAddr:             "test:7000",
+	}
+
+	sub := &subscription{
+		channel:   "test-channel",
+		state:     subStatePending,
+		confirmCh: make(chan error, 1),
+	}
+	meta.pendingSubscriptions["test-channel"] = sub
+
+	meta.wg.Add(1)
+
+	go runEventLoop(meta)
+
+	// Send a command that will fail (invalid connection)
+	responseCh := make(chan error, 1)
+	cmd := &command{
+		cmd:      cmdSubscribe,
+		args:     []any{"test-channel"},
+		sub:      sub,
+		response: responseCh,
+	}
+
+	meta.cmdCh <- cmd
+
+	// Wait for response or timeout
+	select {
+	case err := <-responseCh:
+		if err == nil {
+			t.Error("expected error from failed command")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for command response")
+	}
+
+	// Wait for event loop to exit
+	done := make(chan struct{})
+	go func() {
+		meta.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for event loop to exit")
+	}
+
+	// Verify state is failed
+	if meta.getState() != connStateFailed {
+		t.Errorf("state = %v, want %v", meta.getState(), connStateFailed)
+	}
+
+	// Verify subscription state is failed
+	if sub.getState() != subStateFailed {
+		t.Errorf("subscription state = %v, want %v", sub.getState(), subStateFailed)
+	}
+
+	// Verify removed from pending
+	if _, ok := meta.pendingSubscriptions["test-channel"]; ok {
+		t.Error("subscription should be removed from pending")
+	}
+}
+
+func TestRunEventLoop_CommandError_NilResponse(t *testing.T) {
+	client := redis.NewClient(&redis.Options{
+		Addr: "invalid:9999",
+	})
+	defer client.Close()
+
+	pubsub := client.Subscribe(context.Background())
+	defer pubsub.Close()
+
+	meta := &pubSubMetadata{
+		pubsub:               pubsub,
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+		logger:               slog.Default(),
+		nodeAddr:             "test:7000",
+	}
+
+	meta.wg.Add(1)
+
+	go runEventLoop(meta)
+
+	// Send a command with nil response channel
+	cmd := &command{
+		cmd:      cmdSubscribe,
+		args:     []any{"test-channel"},
+		sub:      nil,
+		response: nil, // nil response channel
+	}
+
+	meta.cmdCh <- cmd
+
+	// Wait for event loop to exit (will fail and exit)
+	done := make(chan struct{})
+	go func() {
+		meta.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success - should not panic with nil response
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for event loop to exit")
+	}
+
+	if meta.getState() != connStateFailed {
+		t.Errorf("state = %v, want %v", meta.getState(), connStateFailed)
+	}
+}
+
+// Tests for sendRedisCommand
+
+func TestSendRedisCommand_AllCommandTypes(t *testing.T) {
+	client := redis.NewClient(&redis.Options{
+		Addr: "invalid:9999",
+	})
+	defer client.Close()
+
+	pubsub := client.Subscribe(context.Background())
+	defer pubsub.Close()
+
+	meta := &pubSubMetadata{
+		pubsub:   pubsub,
+		logger:   slog.Default(),
+		nodeAddr: "test:7000",
+	}
+
+	tests := []struct {
+		name    string
+		cmdType string
+	}{
+		{"Subscribe", cmdSubscribe},
+		{"PSubscribe", cmdPSubscribe},
+		{"SSubscribe", cmdSSubscribe},
+		{"Unsubscribe", cmdUnsubscribe},
+		{"PUnsubscribe", cmdPUnsubscribe},
+		{"SUnsubscribe", cmdSUnsubscribe},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := &command{
+				cmd:  tt.cmdType,
+				args: []any{"test-channel"},
+			}
+
+			// All commands will fail due to invalid connection, but
+			// we're testing that the command type is recognized
+			err := sendRedisCommand(meta, cmd)
+
+			// Error is expected (invalid connection), but not "unknown command"
+			if err != nil && err.Error() == "unknown command: "+tt.cmdType {
+				t.Errorf("command type %s was not recognized", tt.cmdType)
+			}
+		})
+	}
+}
+
+func TestSendRedisCommand_UnknownCommand(t *testing.T) {
+	client := redis.NewClient(&redis.Options{
+		Addr: "invalid:9999",
+	})
+	defer client.Close()
+
+	pubsub := client.Subscribe(context.Background())
+	defer pubsub.Close()
+
+	meta := &pubSubMetadata{
+		pubsub:   pubsub,
+		logger:   slog.Default(),
+		nodeAddr: "test:7000",
+	}
+
+	cmd := &command{
+		cmd:  "INVALID_COMMAND",
+		args: []any{"test-channel"},
+	}
+
+	err := sendRedisCommand(meta, cmd)
+
+	if err == nil {
+		t.Error("expected error for unknown command")
+	}
+	if err.Error() != "unknown command: INVALID_COMMAND" {
+		t.Errorf("error = %q, want %q", err.Error(), "unknown command: INVALID_COMMAND")
+	}
+}
+
+func TestSendRedisCommand_RedirectDetection(t *testing.T) {
+	client := redis.NewClient(&redis.Options{
+		Addr: "invalid:9999",
+	})
+	defer client.Close()
+
+	pubsub := client.Subscribe(context.Background())
+	defer pubsub.Close()
+
+	redirectCalled := false
+	meta := &pubSubMetadata{
+		pubsub:   pubsub,
+		logger:   slog.Default(),
+		nodeAddr: "test:7000",
+		onRedirectDetected: func(addr string, isMoved bool) {
+			redirectCalled = true
+		},
+	}
+
+	cmd := &command{
+		cmd:  cmdSubscribe,
+		args: []any{"test-channel"},
+	}
+
+	// This will error (connection failure, not redirect)
+	_ = sendRedisCommand(meta, cmd)
+
+	// Connection errors are not redirect errors
+	// so redirect callback should not be called
+	if redirectCalled {
+		t.Error("redirect callback should not be called for non-redirect errors")
 	}
 }
