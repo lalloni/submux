@@ -15,8 +15,7 @@ import (
 // TestHashslotMigration verifies that we can detect hashslot migration signals.
 // Use auto-resubscribe = false to verify the signal mechanism in isolation.
 func TestHashslotMigration(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
-	// Use dedicated cluster for migration tests to avoid state interference
+	t.Parallel() // Dedicated cluster - safe to run in parallel
 	cluster := setupTestCluster(t, 3, 1)
 	client := cluster.GetClusterClient()
 
@@ -113,7 +112,7 @@ func TestHashslotMigration(t *testing.T) {
 }
 
 func TestAutoResubscribe(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel() // Dedicated cluster - safe to run in parallel
 	// Use dedicated cluster for migration tests to avoid state interference
 	cluster := setupTestCluster(t, 3, 1)
 	client := cluster.GetClusterClient()
@@ -221,7 +220,7 @@ func TestAutoResubscribe(t *testing.T) {
 }
 
 func TestManualResubscribe(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel() // Dedicated cluster - safe to run in parallel
 	// Use dedicated cluster for migration tests to avoid state interference
 	cluster := setupTestCluster(t, 3, 1)
 	client := cluster.GetClusterClient()
@@ -361,7 +360,7 @@ func TestManualResubscribe(t *testing.T) {
 }
 
 func TestNodeFailure_SubscriptionContinuation(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel() // Dedicated cluster - safe to run in parallel
 	// Need at least 3 shards with replicas to survive a master failure
 	cluster := setupTestCluster(t, 3, 2)
 	client := cluster.GetClusterClient()
@@ -516,7 +515,7 @@ func TestNodeFailure_SubscriptionContinuation(t *testing.T) {
 }
 
 func TestMultipleChannelsAcrossShards(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	// Uses shared cluster - keep sequential to avoid interference
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -612,7 +611,7 @@ func TestMultipleChannelsAcrossShards(t *testing.T) {
 }
 
 func TestSubscriptionAfterTopologyChange(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	// Uses shared cluster - keep sequential to avoid interference
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -703,7 +702,7 @@ func TestSubscriptionAfterTopologyChange(t *testing.T) {
 // so this test primarily verifies that the detection code is wired up correctly
 // and doesn't cause panics or errors.
 func TestMovedErrorDetection(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel() // Dedicated cluster - safe to run in parallel
 	// Use dedicated cluster for migration tests to avoid state interference
 	cluster := setupTestCluster(t, 3, 1)
 	client := cluster.GetClusterClient()
@@ -845,7 +844,7 @@ func TestMovedErrorDetection(t *testing.T) {
 // TestAskErrorHandling verifies that ASK errors (during slot migration) are also detected.
 // ASK errors occur when a slot is in the middle of being migrated.
 func TestAskErrorHandling(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel() // Dedicated cluster - safe to run in parallel
 	// This test verifies the ASK detection code path exists and doesn't panic.
 	// Full ASK testing would require catching the cluster mid-migration which is difficult.
 	// The main goal is to ensure the code handles ASK errors gracefully.
@@ -896,7 +895,7 @@ func TestAskErrorHandling(t *testing.T) {
 // is attempted after a migration (but before polling detects it), the MOVED error
 // triggers a topology refresh and the subscription eventually succeeds.
 func TestTopologyRefreshOnSubscriptionAfterMigration(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel() // Dedicated cluster - safe to run in parallel
 	// Use dedicated cluster for migration tests to avoid state interference
 	cluster := setupTestCluster(t, 3, 1)
 	client := cluster.GetClusterClient()
