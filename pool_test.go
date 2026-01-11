@@ -1021,3 +1021,242 @@ func TestPubSubMetadata_CloseWithPendingSubscriptions(t *testing.T) {
 		t.Errorf("state = %v, want connStateClosed", meta.getState())
 	}
 }
+
+// Tests for getKeyForSlot - pure function that generates a key hashing to specific slot
+
+func TestGetKeyForSlot_ReturnsCorrectSlot(t *testing.T) {
+	testSlots := []int{0, 1, 100, 1000, 5000, 10000, 16383}
+
+	for _, slot := range testSlots {
+		t.Run("slot_"+string(rune('0'+slot%10)), func(t *testing.T) {
+			key := getKeyForSlot(slot)
+			actualSlot := Hashslot(key)
+			if actualSlot != slot {
+				t.Errorf("getKeyForSlot(%d) returned key %q which hashes to %d", slot, key, actualSlot)
+			}
+		})
+	}
+}
+
+func TestGetKeyForSlot_ConsistentResults(t *testing.T) {
+	// Same slot should return same key
+	slot := 5000
+	key1 := getKeyForSlot(slot)
+	key2 := getKeyForSlot(slot)
+	if key1 != key2 {
+		t.Errorf("getKeyForSlot(%d) returned different keys: %q and %q", slot, key1, key2)
+	}
+}
+
+func TestGetKeyForSlot_BoundarySlots(t *testing.T) {
+	// Test boundary slots
+	tests := []int{0, 16383}
+	for _, slot := range tests {
+		key := getKeyForSlot(slot)
+		if Hashslot(key) != slot {
+			t.Errorf("getKeyForSlot(%d) = %q, hashes to %d", slot, key, Hashslot(key))
+		}
+	}
+}
+
+// Tests for removePubSub with actual data
+
+func TestPubSubPool_RemovePubSub_WithData(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	// Create mock PubSub and metadata
+	pubsub := &redis.PubSub{}
+	meta := &pubSubMetadata{
+		nodeAddr:             "node1:7000",
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	// Setup pool state
+	pool.mu.Lock()
+	pool.nodePubSubs["node1:7000"] = []*redis.PubSub{pubsub}
+	pool.hashslotPubSubs[100] = []*redis.PubSub{pubsub}
+	pool.hashslotPubSubs[200] = []*redis.PubSub{pubsub}
+	pool.pubSubMetadata[pubsub] = meta
+	pool.mu.Unlock()
+
+	// Remove the PubSub
+	pool.removePubSub(pubsub)
+
+	// Verify it's removed from all maps
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+
+	if _, ok := pool.pubSubMetadata[pubsub]; ok {
+		t.Error("pubsub should be removed from pubSubMetadata")
+	}
+	if _, ok := pool.nodePubSubs["node1:7000"]; ok {
+		t.Error("node should be removed from nodePubSubs when last pubsub is removed")
+	}
+	if _, ok := pool.hashslotPubSubs[100]; ok {
+		t.Error("hashslot 100 should be removed from hashslotPubSubs")
+	}
+	if _, ok := pool.hashslotPubSubs[200]; ok {
+		t.Error("hashslot 200 should be removed from hashslotPubSubs")
+	}
+}
+
+func TestPubSubPool_RemovePubSub_KeepsOtherPubSubs(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	pubsub1 := &redis.PubSub{}
+	pubsub2 := &redis.PubSub{}
+
+	meta1 := &pubSubMetadata{
+		nodeAddr:             "node1:7000",
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+	meta2 := &pubSubMetadata{
+		nodeAddr:             "node1:7000",
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	pool.mu.Lock()
+	pool.nodePubSubs["node1:7000"] = []*redis.PubSub{pubsub1, pubsub2}
+	pool.hashslotPubSubs[100] = []*redis.PubSub{pubsub1, pubsub2}
+	pool.pubSubMetadata[pubsub1] = meta1
+	pool.pubSubMetadata[pubsub2] = meta2
+	pool.mu.Unlock()
+
+	// Remove only pubsub1
+	pool.removePubSub(pubsub1)
+
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+
+	// pubsub2 should still exist
+	if _, ok := pool.pubSubMetadata[pubsub2]; !ok {
+		t.Error("pubsub2 should still be in pubSubMetadata")
+	}
+	if len(pool.nodePubSubs["node1:7000"]) != 1 {
+		t.Errorf("nodePubSubs should have 1 pubsub, got %d", len(pool.nodePubSubs["node1:7000"]))
+	}
+	if len(pool.hashslotPubSubs[100]) != 1 {
+		t.Errorf("hashslotPubSubs should have 1 pubsub, got %d", len(pool.hashslotPubSubs[100]))
+	}
+}
+
+func TestPubSubPool_RemovePubSub_FromMiddle(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	pubsubs := make([]*redis.PubSub, 3)
+	for i := range pubsubs {
+		pubsubs[i] = &redis.PubSub{}
+	}
+
+	metas := make([]*pubSubMetadata, 3)
+	for i := range metas {
+		metas[i] = &pubSubMetadata{
+			nodeAddr:             "node1:7000",
+			subscriptions:        make(map[string][]*subscription),
+			pendingSubscriptions: make(map[string]*subscription),
+			state:                connStateActive,
+			cmdCh:                make(chan *command, 10),
+			done:                 make(chan struct{}),
+		}
+	}
+
+	// Store pointers before any modification (slice backing array gets modified)
+	first := pubsubs[0]
+	middle := pubsubs[1]
+	last := pubsubs[2]
+
+	// Use separate slices for each map to avoid shared backing array issues
+	nodePubSubsCopy := make([]*redis.PubSub, len(pubsubs))
+	copy(nodePubSubsCopy, pubsubs)
+	hashslotPubSubsCopy := make([]*redis.PubSub, len(pubsubs))
+	copy(hashslotPubSubsCopy, pubsubs)
+
+	pool.mu.Lock()
+	pool.nodePubSubs["node1:7000"] = nodePubSubsCopy
+	pool.hashslotPubSubs[100] = hashslotPubSubsCopy
+	for i, ps := range pubsubs {
+		pool.pubSubMetadata[ps] = metas[i]
+	}
+	pool.mu.Unlock()
+
+	// Remove the middle one
+	pool.removePubSub(middle)
+
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+
+	if len(pool.nodePubSubs["node1:7000"]) != 2 {
+		t.Errorf("nodePubSubs should have 2 pubsubs, got %d", len(pool.nodePubSubs["node1:7000"]))
+	}
+
+	// Verify first and last still exist
+	if _, ok := pool.pubSubMetadata[first]; !ok {
+		t.Error("first pubsub should still exist")
+	}
+	if _, ok := pool.pubSubMetadata[last]; !ok {
+		t.Error("last pubsub should still exist")
+	}
+	if _, ok := pool.pubSubMetadata[middle]; ok {
+		t.Error("middle pubsub should be removed")
+	}
+}
+
+// Tests for createPubSubToNode
+
+func TestCreatePubSubToNode_NilTopologyMonitor(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+	// topologyMonitor is nil by default
+
+	ctx := context.Background()
+	_, err := pool.createPubSubToNode(ctx, "node1:7000")
+
+	if err == nil {
+		t.Error("expected error when topology monitor is nil")
+	}
+	if err.Error() != "topology monitor not initialized" {
+		t.Errorf("error = %q, want %q", err.Error(), "topology monitor not initialized")
+	}
+}
+
+func TestCreatePubSubToNode_NodeNotInTopology(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	// Create a topology monitor with a state that doesn't include the target node
+	tm := &topologyMonitor{
+		config:       cfg,
+		currentState: buildTopologyState(map[int]string{100: "other-node:7000"}),
+		done:         make(chan struct{}),
+	}
+
+	pool.mu.Lock()
+	pool.topologyMonitor = tm
+	pool.mu.Unlock()
+
+	ctx := context.Background()
+	_, err := pool.createPubSubToNode(ctx, "nonexistent-node:7000")
+
+	if err == nil {
+		t.Error("expected error when node not found in topology")
+	}
+	expectedErr := "node nonexistent-node:7000 not found in topology or owns no slots"
+	if err.Error() != expectedErr {
+		t.Errorf("error = %q, want %q", err.Error(), expectedErr)
+	}
+}

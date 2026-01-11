@@ -11,12 +11,16 @@ import (
 func TestInvokeCallback_Normal(t *testing.T) {
 	logger := slog.Default()
 
-	var called atomic.Bool
 	var receivedMsg *Message
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(1)
 
 	callback := func(msg *Message) {
+		mu.Lock()
 		receivedMsg = msg
-		called.Store(true)
+		mu.Unlock()
+		wg.Done()
 	}
 
 	testMsg := &Message{
@@ -28,11 +32,10 @@ func TestInvokeCallback_Normal(t *testing.T) {
 	invokeCallback(logger, callback, testMsg)
 
 	// Wait for async callback
-	time.Sleep(20 * time.Millisecond)
+	wg.Wait()
 
-	if !called.Load() {
-		t.Error("callback was not invoked")
-	}
+	mu.Lock()
+	defer mu.Unlock()
 	if receivedMsg == nil {
 		t.Fatal("received message is nil")
 	}
@@ -99,18 +102,22 @@ func TestInvokeCallback_PanicWithError(t *testing.T) {
 func TestInvokeCallback_NilMessage(t *testing.T) {
 	logger := slog.Default()
 
-	var receivedNil bool
+	var receivedNil atomic.Bool
+	var wg sync.WaitGroup
+	wg.Add(1)
+
 	callback := func(msg *Message) {
 		if msg == nil {
-			receivedNil = true
+			receivedNil.Store(true)
 		}
+		wg.Done()
 	}
 
 	invokeCallback(logger, callback, nil)
 
-	time.Sleep(20 * time.Millisecond)
+	wg.Wait()
 
-	if !receivedNil {
+	if !receivedNil.Load() {
 		t.Error("callback should receive nil message")
 	}
 }
@@ -220,12 +227,12 @@ func TestInvokeCallback_MessageTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var receivedType MessageType
+			var receivedType atomic.Int32
 			var wg sync.WaitGroup
 			wg.Add(1)
 
 			callback := func(msg *Message) {
-				receivedType = msg.Type
+				receivedType.Store(int32(msg.Type))
 				wg.Done()
 			}
 
@@ -240,8 +247,8 @@ func TestInvokeCallback_MessageTypes(t *testing.T) {
 
 			select {
 			case <-done:
-				if receivedType != tt.msgType {
-					t.Errorf("received type = %v, want %v", receivedType, tt.msgType)
+				if MessageType(receivedType.Load()) != tt.msgType {
+					t.Errorf("received type = %v, want %v", MessageType(receivedType.Load()), tt.msgType)
 				}
 			case <-time.After(100 * time.Millisecond):
 				t.Error("timeout waiting for callback")
