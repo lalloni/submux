@@ -59,6 +59,10 @@ var (
 	cleanupOnce       sync.Once
 	pidFilePath       string
 	pidFileMu         sync.Mutex
+
+	// Global port allocator to prevent port conflicts across parallel tests
+	allocatedPorts   = make(map[int]bool)
+	allocatedPortsMu sync.Mutex
 )
 
 // getPidFilePathLocked returns the path to the PID file. Caller must hold pidFileMu.
@@ -252,15 +256,55 @@ func cleanupAllClusters() {
 }
 
 // findAvailablePort finds a single available port by letting the OS assign one.
-// This is more reliable than searching for consecutive ports.
+// It ensures BOTH the port and port+10000 are available, since Redis Cluster
+// automatically uses port+10000 for the cluster bus.
+// Uses a global allocator to prevent TOCTOU race conditions across parallel tests.
 func findAvailablePort() (int, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, fmt.Errorf("failed to find available port: %w", err)
+	const maxAttempts = 100
+
+	allocatedPortsMu.Lock()
+	defer allocatedPortsMu.Unlock()
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// Let OS assign a random available port (briefly, just to get a candidate)
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return 0, fmt.Errorf("failed to find available port: %w", err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		ln.Close()
+
+		// Check if this port or its cluster bus port are already allocated
+		clusterBusPort := port + 10000
+		if allocatedPorts[port] || allocatedPorts[clusterBusPort] {
+			continue
+		}
+
+		// Check if cluster bus port is actually available on the system
+		lnBus, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", clusterBusPort))
+		if err != nil {
+			// Cluster bus port not available, try again
+			continue
+		}
+		lnBus.Close()
+
+		// Mark both ports as allocated globally
+		allocatedPorts[port] = true
+		allocatedPorts[clusterBusPort] = true
+
+		return port, nil
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
-	return port, nil
+
+	return 0, fmt.Errorf("failed to find available port pair after %d attempts", maxAttempts)
+}
+
+// releasePort releases a previously allocated port from the global allocator.
+func releasePort(port int) {
+	allocatedPortsMu.Lock()
+	defer allocatedPortsMu.Unlock()
+
+	delete(allocatedPorts, port)
+	delete(allocatedPorts, port+10000) // Also release cluster bus port
 }
 
 // TestCluster represents a local Redis Cluster for testing.
@@ -619,6 +663,11 @@ func (tc *TestCluster) StopCluster(ctx context.Context) error {
 				removePid(pid)
 			}
 		}
+	}
+
+	// Release all allocated ports back to the global pool
+	for _, node := range tc.nodes {
+		releasePort(node.Port)
 	}
 
 	// Clear processes list
