@@ -8,15 +8,108 @@ This document provides a high-level overview of the **submux** project for AI ag
 
 **🎯 CRITICAL: For ALL architectural, design, and implementation questions, consult [DESIGN.md](DESIGN.md) immediately.**
 
-### Documentation Hierarchy
+### Complete Documentation Ecosystem
 
-1. **[DESIGN.md](DESIGN.md)** - **PRIMARY TECHNICAL REFERENCE** (Architecture, Design Patterns, API Design, Resilience, Testing Strategy, Best Practices)
-2. **[README.md](README.md)** - User-facing quick start and installation guide
-3. **[TODO.md](TODO.md)** - Project roadmap and pending work items
-4. **[CHANGELOG.md](CHANGELOG.md)** - Release history and version changes
-5. **[integration/README.md](integration/README.md)** - Integration test suite guide
+The submux project maintains a carefully structured documentation hierarchy to prevent duplication and ensure consistency. Each document has a specific purpose:
 
-**This file (AGENTS.md)** provides only a quick-start overview and common workflows. **All design decisions are documented in DESIGN.md.**
+#### Core Documentation Files
+
+1. **[DESIGN.md](DESIGN.md)** - **★ PRIMARY TECHNICAL REFERENCE** (355 lines)
+   - **Purpose:** Single source of truth for all architectural and design decisions
+   - **Contains:** Architecture, design patterns, API design, resilience strategies, testing strategy, best practices, observability
+   - **When to read:** Before implementing any feature, changing architecture, or answering design questions
+   - **Update frequency:** Every time architecture or design changes
+   - **Sections:** 7 major sections (Overview, Architecture, Resilience, API Design, Testing, Best Practices, Future Roadmap)
+
+2. **[AGENTS.md](AGENTS.md)** - **★ THIS FILE** (402 lines)
+   - **Purpose:** Single source of truth for all agent instructions and workflows
+   - **Contains:** Development commands, testing workflows, code conventions, quick references with links to DESIGN.md
+   - **When to read:** When starting work, looking for commands, checking conventions
+   - **Update frequency:** When workflows or conventions change
+   - **Audience:** AI agents and human developers working on submux
+
+3. **[CLAUDE.md](CLAUDE.md)** - Entry Point for Claude Code (39 lines)
+   - **Purpose:** Minimal redirect pointing Claude Code agents to AGENTS.md
+   - **Contains:** Brief explanation and quick links table
+   - **When to read:** First entry point for Claude Code agents (then immediately read AGENTS.md)
+   - **Update frequency:** Rarely (structure is stable)
+
+4. **[README.md](README.md)** - User-Facing Documentation (~100 lines)
+   - **Purpose:** Quick start guide for end users of the submux library
+   - **Contains:** Installation, quick start example, features overview, observability intro
+   - **When to read:** When users first discover the library
+   - **Update frequency:** When public API changes or new features are added
+   - **Audience:** Library users and potential adopters
+
+5. **[TODO.md](TODO.md)** - Project Roadmap (~70 lines)
+   - **Purpose:** Track pending work items and completed features
+   - **Contains:** Active TODO items, completed features with details
+   - **When to read:** Before starting new work, checking what's planned
+   - **Update frequency:** When work is completed or new items are identified
+   - **Sections:** Active TODOs, Completed section
+
+6. **[CHANGELOG.md](CHANGELOG.md)** - **★ RELEASE HISTORY** (~200 lines)
+   - **Purpose:** Document all notable changes for each version release
+   - **Contains:** Version history with Added/Changed/Fixed/Documentation sections
+   - **When to read:** To understand what changed between versions
+   - **Update frequency:** Every release (patch, minor, or major version)
+   - **Format:** Follows semantic versioning (MAJOR.MINOR.PATCH)
+   - **Audience:** Users upgrading versions, contributors tracking changes
+   - **Important:** Always update CHANGELOG.md when releasing a new version
+
+#### Specialized Documentation
+
+7. **[integration/README.md](integration/README.md)** - Integration Test Guide
+   - **Purpose:** Detailed guide to running and understanding integration tests
+   - **Contains:** Test infrastructure, cluster setup, running tests, troubleshooting
+   - **When to read:** When working with integration tests or debugging test failures
+
+### Documentation Maintenance Workflow
+
+**When making changes, follow this order:**
+
+1. **Design/Architecture Change:**
+   - ✅ Update [DESIGN.md](DESIGN.md) FIRST (document the design)
+   - ✅ Implement the change
+   - ✅ Update [AGENTS.md](AGENTS.md) if workflows change
+   - ✅ Update [README.md](README.md) if user-facing API changes
+   - ✅ Update [CHANGELOG.md](CHANGELOG.md) with the change (include version number)
+
+2. **New Feature Added:**
+   - ✅ Document design in [DESIGN.md](DESIGN.md)
+   - ✅ Update [README.md](README.md) if user-visible
+   - ✅ Update [CHANGELOG.md](CHANGELOG.md) in "Added" section
+   - ✅ Move from [TODO.md](TODO.md) to "Completed" if applicable
+
+3. **Bug Fixed:**
+   - ✅ Update [CHANGELOG.md](CHANGELOG.md) in "Fixed" section
+   - ✅ Update [DESIGN.md](DESIGN.md) if fix changes design/behavior
+
+4. **Documentation Updated:**
+   - ✅ Update [CHANGELOG.md](CHANGELOG.md) in "Documentation" section (if substantial)
+
+**Golden Rules:**
+- **Never duplicate design content** - Always reference DESIGN.md from other docs
+- **Always update CHANGELOG.md** - Every notable change must be recorded with version
+- **Update DESIGN.md first** - Design before implementation
+- **Cross-reference frequently** - Link between docs instead of duplicating
+
+### Why This Structure?
+
+**Before (Previous State):**
+- ❌ Design duplicated across multiple files
+- ❌ Workflows duplicated between CLAUDE.md and AGENTS.md
+- ❌ High risk of documentation drift
+- ❌ Unclear which file was authoritative
+
+**After (Current State):**
+- ✅ Zero duplication (70+ cross-references instead)
+- ✅ Clear hierarchy: DESIGN.md (design) → AGENTS.md (workflows) → CLAUDE.md (entry)
+- ✅ Single source of truth for each concern
+- ✅ Easy maintenance (update one place)
+- ✅ CHANGELOG.md tracks all changes chronologically
+
+**This file (AGENTS.md)** provides only a quick-start overview and common workflows. **All design decisions are documented in DESIGN.md.** **All changes are tracked in CHANGELOG.md.**
 
 ---
 
@@ -345,6 +438,8 @@ Enable with `WithMeterProvider(provider)` configuration option.
 | Development commands | This file (sections above) |
 | User quick start | [README.md](README.md) |
 | Pending work | [TODO.md](TODO.md) |
+| Release history and changes | [CHANGELOG.md](CHANGELOG.md) - What changed in each version |
+| Integration test guide | [integration/README.md](integration/README.md) |
 
 ---
 
