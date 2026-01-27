@@ -13,10 +13,12 @@ import (
 func buildTopologyState(slots map[int]string) *topologyState {
 	ts := newTopologyState()
 	ts.hashslotToNode = make(map[int]string)
+	ts.hashslotToNodes = make(map[int][]string)
 	ts.nodeToHashslots = make(map[string][]int)
 
 	for slot, node := range slots {
 		ts.hashslotToNode[slot] = node
+		ts.hashslotToNodes[slot] = []string{node} // Single node (master only) for tests
 		ts.nodeToHashslots[node] = append(ts.nodeToHashslots[node], slot)
 	}
 	return ts

@@ -451,7 +451,10 @@ func (sm *SubMux) unsubscribeSubscription(sub *Sub) error {
 
 		// Check if this is the last subscription for this channel
 		sm.mu.RLock()
-		allSubs := sm.subscriptions[channel]
+		allSubsRef := sm.subscriptions[channel]
+		// Make a copy to avoid races when other goroutines modify the slice
+		allSubs := make([]*subscription, len(allSubsRef))
+		copy(allSubs, allSubsRef)
 		sm.mu.RUnlock()
 
 		// Count how many subscriptions remain after removing ours

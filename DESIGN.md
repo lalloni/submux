@@ -127,7 +127,11 @@ func (sm *SubMux) SSubscribeSync(ctx context.Context, patterns []string, cb Mess
 ### 4.3 Configuration Options
 Configured via functional options in `New()`:
 *   `WithAutoResubscribe(bool)`: Enable automatic handling of migrations.
-*   `WithReplicaPreference(bool)`: Prefer connecting to replicas to save master bandwidth.
+*   `WithNodePreference(NodePreference)`: Set node distribution strategy (default: `BalancedAll`):
+    -   `PreferMasters`: Route all subscriptions to master nodes only
+    -   `BalancedAll`: Distribute equally across all nodes (masters + replicas) for optimal resource utilization
+    -   `PreferReplicas`: Prefer replicas to protect write-saturated masters
+*   `WithReplicaPreference(bool)`: **Deprecated** - Use `WithNodePreference()` for clearer intent.
 *   `WithTopologyPollInterval(time.Duration)`: Customized refresh rate.
 *   `WithMinConnectionsPerNode(int)`: Minimum connection pool size.
 *   `WithMigrationTimeout(time.Duration)`: Maximum duration to wait for migration resubscription (default 30s).
@@ -189,7 +193,10 @@ Configured via functional options in `New()`:
 
 ### 6.3 Performance
 *   **Batching**: Subscribe to multiple channels in one call (`[]string{"a", "b"}`) rather than loop.
-*   **Replicas**: Use `WithReplicaPreference(true)` for read-heavy Pub/Sub workloads.
+*   **Node Distribution**:
+    - Use `WithNodePreference(BalancedAll)` (default) for most workloads - distributes load across all infrastructure
+    - Use `WithNodePreference(PreferReplicas)` only when masters are write-saturated and need protection
+    - Use `WithNodePreference(PreferMasters)` to minimize nodes involved (rarely needed)
 
 *   **Fast Callbacks**: Callbacks are async but heavy blocking can affect throughput. Offload generic work to queues.
 
@@ -220,7 +227,7 @@ func main() {
     // 2. Create SubMux with production settings
     subMux, err := submux.New(clusterClient,
         submux.WithAutoResubscribe(true),            // Handle migrations automatically
-        submux.WithReplicaPreference(true),          // Read scaling
+        submux.WithNodePreference(submux.BalancedAll), // Distribute across all nodes (default)
         submux.WithTopologyPollInterval(2*time.Second),
     )
     if err != nil {

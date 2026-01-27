@@ -13,8 +13,8 @@ type config struct {
 	// minConnectionsPerNode sets the minimum number of connections per shard node.
 	minConnectionsPerNode int
 
-	// replicaPreference sets preference for using replica nodes over master nodes.
-	replicaPreference bool
+	// nodePreference determines the strategy for distributing subscriptions across cluster nodes.
+	nodePreference NodePreference
 
 	// topologyPollInterval sets how often to poll the cluster topology for changes.
 	topologyPollInterval time.Duration
@@ -34,7 +34,7 @@ func defaultConfig() *config {
 	return &config{
 		autoResubscribe:       false,
 		minConnectionsPerNode: 1,
-		replicaPreference:     false,
+		nodePreference:        BalancedAll,      // Default: distribute equally across all nodes
 		topologyPollInterval:  1 * time.Second,  // Default: poll at least once per second
 		migrationTimeout:      30 * time.Second, // Default: 30s max for migration resubscription
 		migrationStallCheck:   2 * time.Second,  // Default: check for stalls every 2s
@@ -69,10 +69,27 @@ func WithMinConnectionsPerNode(count int) Option {
 	}
 }
 
+// WithNodePreference sets the strategy for distributing subscriptions across cluster nodes.
+// Available options:
+//   - PreferMasters: Route subscriptions to master nodes only (legacy behavior)
+//   - BalancedAll: Distribute equally across all nodes - masters and replicas (recommended default)
+//   - PreferReplicas: Prefer replicas to protect write-saturated masters
+func WithNodePreference(preference NodePreference) Option {
+	return func(c *config) {
+		c.nodePreference = preference
+	}
+}
+
 // WithReplicaPreference sets preference for using replica nodes over master nodes.
+// Deprecated: Use WithNodePreference(PreferReplicas) instead for clearer intent,
+// or WithNodePreference(BalancedAll) for better default behavior.
 func WithReplicaPreference(preferReplicas bool) Option {
 	return func(c *config) {
-		c.replicaPreference = preferReplicas
+		if preferReplicas {
+			c.nodePreference = PreferReplicas
+		} else {
+			c.nodePreference = PreferMasters
+		}
 	}
 }
 

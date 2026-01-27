@@ -72,12 +72,22 @@ func TestSubMux_New_WithOptions(t *testing.T) {
 	}
 	subMux.Close()
 
-	// Test with WithReplicaPreference
+	// Test with WithNodePreference
+	subMux, err = New(clusterClient, WithNodePreference(PreferReplicas))
+	if err != nil {
+		t.Fatalf("New with options returned error: %v", err)
+	}
+	if subMux.config.nodePreference != PreferReplicas {
+		t.Error("WithNodePreference option not applied")
+	}
+	subMux.Close()
+
+	// Test with WithReplicaPreference (backward compatibility)
 	subMux, err = New(clusterClient, WithReplicaPreference(true))
 	if err != nil {
 		t.Fatalf("New with options returned error: %v", err)
 	}
-	if subMux.config.replicaPreference != true {
+	if subMux.config.nodePreference != PreferReplicas {
 		t.Error("WithReplicaPreference option not applied")
 	}
 	subMux.Close()
@@ -86,7 +96,7 @@ func TestSubMux_New_WithOptions(t *testing.T) {
 	subMux, err = New(clusterClient,
 		WithAutoResubscribe(true),
 		WithMinConnectionsPerNode(2),
-		WithReplicaPreference(true),
+		WithNodePreference(BalancedAll),
 	)
 	if err != nil {
 		t.Fatalf("New with multiple options returned error: %v", err)
@@ -97,8 +107,8 @@ func TestSubMux_New_WithOptions(t *testing.T) {
 	if subMux.config.minConnectionsPerNode != 2 {
 		t.Error("minConnectionsPerNode not set")
 	}
-	if !subMux.config.replicaPreference {
-		t.Error("replicaPreference not set")
+	if subMux.config.nodePreference != BalancedAll {
+		t.Error("nodePreference not set")
 	}
 	subMux.Close()
 }

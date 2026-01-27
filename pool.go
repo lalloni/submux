@@ -271,7 +271,20 @@ func (p *pubSubPool) getPubSubForHashslot(ctx context.Context, hashslot int) (*r
 
 // createPubSubForHashslot creates a new PubSub connection for the given hashslot.
 func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int) (*redis.PubSub, error) {
-	// Get node information for this hashslot from cluster topology
+	// Check if we should use balanced (all nodes) selection
+	p.mu.RLock()
+	tm := p.topologyMonitor
+	p.mu.RUnlock()
+
+	if tm != nil && p.config.nodePreference == BalancedAll {
+		// For BalancedAll, get all nodes for this hashslot and find least-loaded across all
+		nodes, ok := tm.getNodesForHashslot(hashslot)
+		if ok && len(nodes) > 0 {
+			return p.selectLeastLoadedAcrossNodes(ctx, hashslot, nodes)
+		}
+	}
+
+	// For PreferMasters or PreferReplicas, get the selected node
 	nodeAddr, err := p.getNodeForHashslot(ctx, hashslot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node for hashslot %d: %w", hashslot, err)
@@ -318,6 +331,77 @@ func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int) 
 	p.nodePubSubs[nodeAddr] = append(p.nodePubSubs[nodeAddr], pubsub)
 	p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], pubsub)
 	p.mu.Unlock()
+
+	return pubsub, nil
+}
+
+// selectLeastLoadedAcrossNodes finds the least-loaded connection across all given nodes.
+// If no connections exist, creates a new one to the least-loaded node (by connection count).
+func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot int, nodes []string) (*redis.PubSub, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var bestPubSub *redis.PubSub
+	var bestNodeAddr string
+	minSubs := int(^uint(0) >> 1) // max int
+	nodeConnCounts := make(map[string]int)
+
+	// Find least-loaded connection across ALL nodes
+	for _, nodeAddr := range nodes {
+		pubsubs, ok := p.nodePubSubs[nodeAddr]
+		if !ok {
+			nodeConnCounts[nodeAddr] = 0
+			continue
+		}
+
+		nodeConnCounts[nodeAddr] = len(pubsubs)
+
+		for _, pubsub := range pubsubs {
+			meta := p.pubSubMetadata[pubsub]
+			if meta == nil || meta.getState() != connStateActive {
+				continue
+			}
+			count := meta.subscriptionCount()
+			if count < minSubs {
+				minSubs = count
+				bestPubSub = pubsub
+				bestNodeAddr = nodeAddr
+			}
+		}
+	}
+
+	// If we found an existing connection, reuse it
+	if bestPubSub != nil {
+		p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], bestPubSub)
+		return bestPubSub, nil
+	}
+
+	// No existing connections - pick the node with fewest connections
+	minConns := int(^uint(0) >> 1)
+	for _, nodeAddr := range nodes {
+		if nodeConnCounts[nodeAddr] < minConns {
+			minConns = nodeConnCounts[nodeAddr]
+			bestNodeAddr = nodeAddr
+		}
+	}
+
+	if bestNodeAddr == "" {
+		return nil, fmt.Errorf("no valid nodes found for hashslot %d", hashslot)
+	}
+
+	// Release lock before creating connection (it may take time)
+	p.mu.Unlock()
+
+	// Create new connection to the least-loaded node
+	pubsub, err := p.createPubSubToNode(ctx, bestNodeAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create PubSub to node %s: %w", bestNodeAddr, err)
+	}
+
+	// Re-acquire lock to update maps
+	p.mu.Lock()
+	p.nodePubSubs[bestNodeAddr] = append(p.nodePubSubs[bestNodeAddr], pubsub)
+	p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], pubsub)
 
 	return pubsub, nil
 }

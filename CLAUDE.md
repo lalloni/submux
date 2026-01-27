@@ -83,14 +83,23 @@ staticcheck ./...
 
 **Important:** Auto-resubscribe defaults to `false`. Must be explicitly enabled for automatic migration handling.
 
-**Replica Preference**: When enabled (`WithReplicaPreference(true)`), reads are distributed across replica nodes to reduce master load. The pool selects the least-loaded replica for new subscriptions.
+**Node Distribution Strategy**: Subscriptions can be distributed across cluster nodes using three strategies:
+- **BalancedAll** (default): Distributes subscriptions equally across all nodes (masters + replicas) for optimal resource utilization
+- **PreferMasters**: Routes all subscriptions to master nodes only
+- **PreferReplicas**: Prefers replica nodes to protect write-saturated masters, falls back to masters if no replicas available
+
+The system always selects the least-loaded node within the chosen strategy.
 
 ### Configuration Options
 
 Available via `submux.New(clusterClient, options...)`:
 
 - `WithAutoResubscribe(bool)`: Enable automatic migration handling (default: `false`)
-- `WithReplicaPreference(bool)`: Prefer replica nodes over masters (default: `false`)
+- `WithNodePreference(NodePreference)`: Set node distribution strategy (default: `BalancedAll`)
+  - `PreferMasters`: All subscriptions to master nodes
+  - `BalancedAll`: Equal distribution across all nodes (recommended)
+  - `PreferReplicas`: Prefer replicas to protect write-heavy masters
+- `WithReplicaPreference(bool)`: **Deprecated** - Use `WithNodePreference()` instead
 - `WithTopologyPollInterval(time.Duration)`: Cluster topology refresh rate (default: `1s`, min: `100ms`)
 - `WithMinConnectionsPerNode(int)`: Minimum connection pool size per node (default: `1`)
 - `WithLogger(*slog.Logger)`: Custom structured logger (default: `slog.Default()`)

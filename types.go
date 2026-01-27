@@ -66,6 +66,28 @@ const (
 	EventMigrationStalled EventType = "migration_stalled"
 )
 
+// NodePreference determines the strategy for distributing subscriptions across cluster nodes.
+type NodePreference int
+
+const (
+	// PreferMasters routes all subscriptions to master nodes only.
+	// Use this when: You want to minimize the number of nodes involved in pub/sub,
+	// or when masters have spare capacity and you want centralized routing.
+	PreferMasters NodePreference = iota
+
+	// BalancedAll distributes subscriptions equally across all nodes (masters and replicas) within each shard.
+	// This is the recommended default for most workloads as it:
+	// - Maximizes resource utilization across all infrastructure
+	// - Provides better failure characteristics (smaller blast radius)
+	// - Works well for both light and heavy pub/sub loads
+	BalancedAll
+
+	// PreferReplicas routes subscriptions to replica nodes, avoiding masters when possible.
+	// Use this when: Masters are write-saturated and you need to protect them from additional pub/sub load.
+	// Falls back to masters if no replicas are available.
+	PreferReplicas
+)
+
 // MessageCallback is a function type for handling subscription events (messages and signal notifications).
 // Callbacks are invoked asynchronously in separate goroutines and must be thread-safe.
 type MessageCallback func(msg *Message)

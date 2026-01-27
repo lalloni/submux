@@ -15,8 +15,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.minConnectionsPerNode != 1 {
 		t.Errorf("minConnectionsPerNode = %d, want 1", cfg.minConnectionsPerNode)
 	}
-	if cfg.replicaPreference != false {
-		t.Errorf("replicaPreference = %v, want false", cfg.replicaPreference)
+	if cfg.nodePreference != BalancedAll {
+		t.Errorf("nodePreference = %v, want BalancedAll", cfg.nodePreference)
 	}
 	if cfg.topologyPollInterval != 1*time.Second {
 		t.Errorf("topologyPollInterval = %v, want 1s", cfg.topologyPollInterval)
@@ -162,14 +162,37 @@ func TestWithAutoResubscribe(t *testing.T) {
 	}
 }
 
+func TestWithNodePreference(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    NodePreference
+		expected NodePreference
+	}{
+		{"prefer masters", PreferMasters, PreferMasters},
+		{"balanced all", BalancedAll, BalancedAll},
+		{"prefer replicas", PreferReplicas, PreferReplicas},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := defaultConfig()
+			WithNodePreference(tt.input)(cfg)
+
+			if cfg.nodePreference != tt.expected {
+				t.Errorf("nodePreference = %v, want %v", cfg.nodePreference, tt.expected)
+			}
+		})
+	}
+}
+
 func TestWithReplicaPreference(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    bool
-		expected bool
+		expected NodePreference
 	}{
-		{"prefer replicas", true, true},
-		{"prefer masters", false, false},
+		{"prefer replicas true", true, PreferReplicas},
+		{"prefer replicas false", false, PreferMasters},
 	}
 
 	for _, tt := range tests {
@@ -177,8 +200,8 @@ func TestWithReplicaPreference(t *testing.T) {
 			cfg := defaultConfig()
 			WithReplicaPreference(tt.input)(cfg)
 
-			if cfg.replicaPreference != tt.expected {
-				t.Errorf("replicaPreference = %v, want %v", cfg.replicaPreference, tt.expected)
+			if cfg.nodePreference != tt.expected {
+				t.Errorf("nodePreference = %v, want %v", cfg.nodePreference, tt.expected)
 			}
 		})
 	}
@@ -236,8 +259,8 @@ func TestMultipleOptions(t *testing.T) {
 	if cfg.autoResubscribe != true {
 		t.Errorf("autoResubscribe = %v, want true", cfg.autoResubscribe)
 	}
-	if cfg.replicaPreference != true {
-		t.Errorf("replicaPreference = %v, want true", cfg.replicaPreference)
+	if cfg.nodePreference != PreferReplicas {
+		t.Errorf("nodePreference = %v, want PreferReplicas", cfg.nodePreference)
 	}
 }
 

@@ -299,6 +299,11 @@ func TestRollingRestart_Stability(t *testing.T) {
 			// Wait a bit (simulate downtime)
 			time.Sleep(1 * time.Second)
 
+			// Check context again before starting (avoid cleanup race)
+			if ctx.Err() != nil {
+				return
+			}
+
 			// Start
 			if err := cluster.StartNode(context.Background(), target.Address); err != nil {
 				t.Logf("Chaos: Failed to start node: %v", err)

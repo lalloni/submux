@@ -14,8 +14,12 @@ import (
 
 // topologyState represents the current cluster topology state.
 type topologyState struct {
-	// hashslotToNode maps hashslot to the node address that owns it.
+	// hashslotToNode maps hashslot to the node address that owns it (master node).
 	hashslotToNode map[int]string
+
+	// hashslotToNodes maps hashslot to all nodes (master + replicas) that can serve it.
+	// Index 0 is always the master, indices 1+ are replicas.
+	hashslotToNodes map[int][]string
 
 	// nodeToHashslots maps node address to the list of hashslots it owns.
 	nodeToHashslots map[string][]int
@@ -28,6 +32,7 @@ type topologyState struct {
 func newTopologyState() *topologyState {
 	return &topologyState{
 		hashslotToNode:  make(map[int]string),
+		hashslotToNodes: make(map[int][]string),
 		nodeToHashslots: make(map[string][]int),
 	}
 }
@@ -39,6 +44,7 @@ func (ts *topologyState) update(slots []redis.ClusterSlot) {
 
 	// Clear existing mappings
 	ts.hashslotToNode = make(map[int]string)
+	ts.hashslotToNodes = make(map[int][]string)
 	ts.nodeToHashslots = make(map[string][]int)
 
 	// Build new mappings
@@ -48,15 +54,22 @@ func (ts *topologyState) update(slots []redis.ClusterSlot) {
 		}
 		masterAddr := slot.Nodes[0].Addr
 
-		// Map all hashslots in this range to the master node
+		// Collect all node addresses (master + replicas)
+		allNodeAddrs := make([]string, len(slot.Nodes))
+		for i, node := range slot.Nodes {
+			allNodeAddrs[i] = node.Addr
+		}
+
+		// Map all hashslots in this range to both master and all nodes
 		for hashslot := int(slot.Start); hashslot <= int(slot.End); hashslot++ {
 			ts.hashslotToNode[hashslot] = masterAddr
+			ts.hashslotToNodes[hashslot] = allNodeAddrs
 			ts.nodeToHashslots[masterAddr] = append(ts.nodeToHashslots[masterAddr], hashslot)
 		}
 	}
 }
 
-// getNodeForHashslot returns the node address that owns the given hashslot.
+// getNodeForHashslot returns the master node address that owns the given hashslot.
 func (ts *topologyState) getNodeForHashslot(hashslot int) (string, bool) {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
@@ -64,18 +77,80 @@ func (ts *topologyState) getNodeForHashslot(hashslot int) (string, bool) {
 	return node, ok
 }
 
-// getNodeForHashslot returns the node address that owns the given hashslot from the topology monitor.
+// getNodesForHashslot returns all nodes (master + replicas) that can serve the given hashslot.
+// Index 0 is always the master, indices 1+ are replicas.
+func (ts *topologyState) getNodesForHashslot(hashslot int) ([]string, bool) {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	nodes, ok := ts.hashslotToNodes[hashslot]
+	if !ok {
+		return nil, false
+	}
+	// Return a copy to avoid concurrent modification
+	nodesCopy := make([]string, len(nodes))
+	copy(nodesCopy, nodes)
+	return nodesCopy, true
+}
+
+// selectNodeForHashslot selects a node for the given hashslot based on NodePreference.
+func (ts *topologyState) selectNodeForHashslot(hashslot int, preference NodePreference) (string, bool) {
+	nodes, ok := ts.getNodesForHashslot(hashslot)
+	if !ok || len(nodes) == 0 {
+		return "", false
+	}
+
+	switch preference {
+	case PreferMasters:
+		// Always return master (index 0)
+		return nodes[0], true
+
+	case PreferReplicas:
+		// Prefer replicas, fall back to master if no replicas
+		if len(nodes) > 1 {
+			// Return first replica
+			return nodes[1], true
+		}
+		// No replicas, use master
+		return nodes[0], true
+
+	case BalancedAll:
+		// Return all nodes for external load balancing
+		// Caller should implement least-loaded selection
+		// For now, return master as default (caller will handle selection)
+		return nodes[0], true
+
+	default:
+		// Default to master
+		return nodes[0], true
+	}
+}
+
+// getNodeForHashslot returns the node address for the given hashslot from the topology monitor,
+// respecting the configured node preference strategy.
 func (tm *topologyMonitor) getNodeForHashslot(hashslot int) (string, bool) {
 	// Copy state reference under lock to avoid nested lock acquisition
 	// (tm.mu -> topologyState.mu could deadlock if acquired in reverse elsewhere)
 	tm.mu.Lock()
 	state := tm.currentState
+	preference := tm.config.nodePreference
 	tm.mu.Unlock()
 
 	if state == nil {
 		return "", false
 	}
-	return state.getNodeForHashslot(hashslot)
+	return state.selectNodeForHashslot(hashslot, preference)
+}
+
+// getNodesForHashslot returns all nodes (master + replicas) for the given hashslot from the topology monitor.
+func (tm *topologyMonitor) getNodesForHashslot(hashslot int) ([]string, bool) {
+	tm.mu.Lock()
+	state := tm.currentState
+	tm.mu.Unlock()
+
+	if state == nil {
+		return nil, false
+	}
+	return state.getNodesForHashslot(hashslot)
 }
 
 // getAnySlotForNode returns any hashslot owned by the given node.
