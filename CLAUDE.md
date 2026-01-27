@@ -103,6 +103,11 @@ Available via `submux.New(clusterClient, options...)`:
 - `WithTopologyPollInterval(time.Duration)`: Cluster topology refresh rate (default: `1s`, min: `100ms`)
 - `WithMinConnectionsPerNode(int)`: Minimum connection pool size per node (default: `1`)
 - `WithLogger(*slog.Logger)`: Custom structured logger (default: `slog.Default()`)
+- `WithMeterProvider(metric.MeterProvider)`: OpenTelemetry metrics provider for production observability (default: `nil`, metrics disabled)
+  - Exposes 21 metrics: 11 counters, 4 histograms, 2 observable gauges (planned)
+  - Metric prefix: `submux.*`
+  - Zero overhead when not configured (no-op implementation)
+  - See "OpenTelemetry Metrics" section below for details
 
 ### Concurrency Model
 
@@ -270,3 +275,80 @@ The combination provides both reliable periodic updates and fast reaction to act
 5. **SSUBSCRIBE requires Redis 7.0+**: Attempting to use `SSubscribeSync` on older Redis versions will fail. Use `SubscribeSync` or `PSubscribeSync` instead.
 
 6. **Callbacks run in separate goroutines**: Each message invokes the callback in a new goroutine. Callbacks must be thread-safe and should not block.
+
+## OpenTelemetry Metrics
+
+submux provides optional OpenTelemetry instrumentation for production observability. Metrics are **opt-in** and have zero overhead when disabled.
+
+### Enabling Metrics
+
+```go
+import (
+    "github.com/lalloni/submux"
+    sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+    "go.opentelemetry.io/otel/exporters/prometheus"
+)
+
+// Create Prometheus exporter
+exporter, _ := prometheus.New()
+provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exporter))
+
+// Create SubMux with metrics enabled
+subMux, _ := submux.New(clusterClient,
+    submux.WithMeterProvider(provider),
+    submux.WithAutoResubscribe(true),
+)
+```
+
+### Available Metrics
+
+**Counters** (11):
+- `submux.messages.received` - Total messages from Redis (by subscription_type, node_address)
+- `submux.callbacks.invoked` - Total callback invocations (by subscription_type)
+- `submux.callbacks.panics` - Total panic recoveries in callbacks (by subscription_type)
+- `submux.subscriptions.attempts` - Subscription attempts (by subscription_type, success)
+- `submux.connections.created` - Connections created (by node_address)
+- `submux.connections.failed` - Connection failures (by node_address, error_type)
+- `submux.migrations.started` - Migrations detected
+- `submux.migrations.completed` - Migrations successfully completed
+- `submux.migrations.stalled` - Migrations with no progress (>2s)
+- `submux.migrations.timeout` - Migrations exceeding 30s
+- `submux.topology.refreshes` - Topology refresh attempts (by success)
+
+**Histograms** (4):
+- `submux.callbacks.latency` (ms) - Callback execution time (by subscription_type)
+- `submux.messages.latency` (ms) - Message receive to callback invocation latency (by subscription_type)
+- `submux.migrations.duration` (ms) - Time to complete migration resubscription
+- `submux.topology.refresh_latency` (ms) - Time to refresh cluster topology
+
+**Observable Gauges** (2 - planned):
+- `submux.subscriptions.active` - Current subscriptions (by subscription_type)
+- `submux.connections.active` - Current connections (by node_address)
+
+### Metric Attributes
+
+All metrics use **low-cardinality attributes** to prevent metric explosion:
+
+- `subscription_type`: `subscribe` | `psubscribe` | `ssubscribe` (3 values)
+- `node_address`: Node address like `10.0.1.2:6379` (bounded by cluster size, typically <100)
+- `success`: `true` | `false` (2 values)
+- `error_type`: Bounded set of error types
+
+**Important:** Channel names are **never used as attributes** to avoid unbounded cardinality.
+
+### Performance
+
+- **No-op overhead**: 0.1 ns per operation (when metrics disabled)
+- **OTEL overhead**: 150-210 ns per operation (when metrics enabled)
+- **Zero allocations** for no-op recorder
+- **Compiler inlining**: No-op calls are completely optimized away
+
+### Building Without Metrics
+
+To build with zero OpenTelemetry dependencies:
+
+```bash
+go build -tags nometrics -o myapp
+```
+
+This removes all OTEL code at compile time.

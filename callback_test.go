@@ -29,7 +29,7 @@ func TestInvokeCallback_Normal(t *testing.T) {
 		Payload: "hello",
 	}
 
-	invokeCallback(logger, callback, testMsg)
+	invokeCallback(logger, &noopMetrics{}, callback, testMsg)
 
 	// Wait for async callback
 	wg.Wait()
@@ -62,7 +62,7 @@ func TestInvokeCallback_PanicRecovery(t *testing.T) {
 	}
 
 	// This should not panic the test - panic should be recovered
-	invokeCallback(logger, panicCallback, testMsg)
+	invokeCallback(logger, &noopMetrics{}, panicCallback, testMsg)
 
 	// Wait for callback to complete
 	<-done
@@ -82,7 +82,7 @@ func TestInvokeCallback_PanicWithNil(t *testing.T) {
 	testMsg := &Message{Type: MessageTypeMessage}
 
 	// Should handle panic(nil) gracefully
-	invokeCallback(logger, panicCallback, testMsg)
+	invokeCallback(logger, &noopMetrics{}, panicCallback, testMsg)
 
 	<-done
 	// If we reach here, the test passes
@@ -99,7 +99,7 @@ func TestInvokeCallback_PanicWithError(t *testing.T) {
 
 	testMsg := &Message{Type: MessageTypeMessage}
 
-	invokeCallback(logger, panicCallback, testMsg)
+	invokeCallback(logger, &noopMetrics{}, panicCallback, testMsg)
 
 	<-done
 	// If we reach here, the test passes
@@ -119,7 +119,7 @@ func TestInvokeCallback_NilMessage(t *testing.T) {
 		wg.Done()
 	}
 
-	invokeCallback(logger, callback, nil)
+	invokeCallback(logger, &noopMetrics{}, callback, nil)
 
 	wg.Wait()
 
@@ -149,7 +149,7 @@ func TestInvokeCallback_Concurrency(t *testing.T) {
 			Channel: "concurrent",
 			Payload: "test",
 		}
-		invokeCallback(logger, callback, testMsg)
+		invokeCallback(logger, &noopMetrics{}, callback, testMsg)
 	}
 
 	// Wait with timeout
@@ -187,7 +187,7 @@ func TestInvokeCallback_PanicDoesNotAffectOthers(t *testing.T) {
 		panicCallback := func(msg *Message) {
 			panic("intentional panic")
 		}
-		invokeCallback(logger, panicCallback, &Message{Type: MessageTypeMessage})
+		invokeCallback(logger, &noopMetrics{}, panicCallback, &Message{Type: MessageTypeMessage})
 	}
 
 	// Then, invoke successful callbacks
@@ -196,7 +196,7 @@ func TestInvokeCallback_PanicDoesNotAffectOthers(t *testing.T) {
 			successCount.Add(1)
 			wg.Done()
 		}
-		invokeCallback(logger, successCallback, &Message{Type: MessageTypeMessage})
+		invokeCallback(logger, &noopMetrics{}, successCallback, &Message{Type: MessageTypeMessage})
 	}
 
 	// Wait with timeout
@@ -243,7 +243,7 @@ func TestInvokeCallback_MessageTypes(t *testing.T) {
 			}
 
 			testMsg := &Message{Type: tt.msgType}
-			invokeCallback(logger, callback, testMsg)
+			invokeCallback(logger, &noopMetrics{}, callback, testMsg)
 
 			done := make(chan struct{})
 			go func() {
@@ -274,7 +274,7 @@ func TestInvokeCallback_SlowCallback(t *testing.T) {
 	}
 
 	start := time.Now()
-	invokeCallback(logger, slowCallback, &Message{Type: MessageTypeMessage})
+	invokeCallback(logger, &noopMetrics{}, slowCallback, &Message{Type: MessageTypeMessage})
 	elapsed := time.Since(start)
 
 	// invokeCallback should return immediately (async)

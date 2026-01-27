@@ -3,6 +3,8 @@ package submux
 import (
 	"log/slog"
 	"time"
+
+	"go.opentelemetry.io/otel/metric"
 )
 
 // config holds the configuration for a SubMux instance.
@@ -27,6 +29,14 @@ type config struct {
 
 	// logger is the structured logger to use.
 	logger *slog.Logger
+
+	// meterProvider is the OpenTelemetry MeterProvider for metrics collection.
+	// If nil, metrics are disabled (no-op).
+	meterProvider metric.MeterProvider
+
+	// recorder is the internal metrics recorder created from meterProvider.
+	// This is set during SubMux initialization.
+	recorder metricsRecorder
 }
 
 // defaultConfig returns the default configuration.
@@ -39,6 +49,8 @@ func defaultConfig() *config {
 		migrationTimeout:      30 * time.Second, // Default: 30s max for migration resubscription
 		migrationStallCheck:   2 * time.Second,  // Default: check for stalls every 2s
 		logger:                slog.Default(),
+		meterProvider:         nil,         // Default: metrics disabled
+		recorder:              &noopMetrics{}, // Default: no-op recorder
 	}
 }
 
@@ -127,5 +139,25 @@ func WithMigrationStallCheck(interval time.Duration) Option {
 			interval = 100 * time.Millisecond
 		}
 		c.migrationStallCheck = interval
+	}
+}
+
+// WithMeterProvider sets the OpenTelemetry MeterProvider for metrics collection.
+// Metrics are opt-in - if not provided, all metrics operations become no-ops with zero overhead.
+//
+// Example usage with Prometheus:
+//
+//	import (
+//	    sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+//	    "go.opentelemetry.io/otel/exporters/prometheus"
+//	)
+//
+//	exporter, _ := prometheus.New()
+//	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exporter))
+//	subMux, _ := submux.New(clusterClient, submux.WithMeterProvider(provider))
+//
+func WithMeterProvider(provider metric.MeterProvider) Option {
+	return func(c *config) {
+		c.meterProvider = provider
 	}
 }

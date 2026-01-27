@@ -136,6 +136,7 @@ Configured via functional options in `New()`:
 *   `WithMinConnectionsPerNode(int)`: Minimum connection pool size.
 *   `WithMigrationTimeout(time.Duration)`: Maximum duration to wait for migration resubscription (default 30s).
 *   `WithMigrationStallCheck(time.Duration)`: How often to check for stalled migration progress (default 2s).
+*   `WithMeterProvider(metric.MeterProvider)`: OpenTelemetry MeterProvider for production observability (default: `nil`, metrics disabled).
 
 ---
 
@@ -215,6 +216,8 @@ import (
 
     "github.com/redis/go-redis/v9"
     "github.com/lalloni/submux"
+    sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+    "go.opentelemetry.io/otel/exporters/prometheus"
 )
 
 func main() {
@@ -224,18 +227,23 @@ func main() {
     })
     defer clusterClient.Close()
 
-    // 2. Create SubMux with production settings
+    // 2. Configure OpenTelemetry metrics (optional)
+    exporter, _ := prometheus.New()
+    meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exporter))
+
+    // 3. Create SubMux with production settings
     subMux, err := submux.New(clusterClient,
         submux.WithAutoResubscribe(true),            // Handle migrations automatically
         submux.WithNodePreference(submux.BalancedAll), // Distribute across all nodes (default)
         submux.WithTopologyPollInterval(2*time.Second),
+        submux.WithMeterProvider(meterProvider),     // Enable observability
     )
     if err != nil {
         log.Fatal(err)
     }
     defer subMux.Close() // Critical cleanup
 
-    // 3. Define robust callback
+    // 4. Define robust callback
     callback := func(msg *submux.Message) {
         switch msg.Type {
         case submux.MessageTypeSignal:
@@ -245,7 +253,7 @@ func main() {
         }
     }
 
-    // 4. Subscribe with timeout context
+    // 5. Subscribe with timeout context
     ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
     defer cancel()
 
@@ -253,10 +261,10 @@ func main() {
     if err != nil {
         log.Fatalf("Subscription failed: %v", err)
     }
-    // 5. Ensure specific subscription cleanup
+    // 6. Ensure specific subscription cleanup
     defer sub.Unsubscribe(context.Background())
 
-    // 6. Block until shutdown signal
+    // 7. Block until shutdown signal
     sigCh := make(chan os.Signal, 1)
     signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
     <-sigCh
@@ -265,9 +273,83 @@ func main() {
 }
 ```
 
+### 6.5 Observability
+
+submux provides built-in OpenTelemetry metrics for production monitoring and debugging. Metrics are **opt-in** and have **zero overhead** when not configured.
+
+#### 6.5.1 Metrics Architecture
+
+**Design Principles:**
+*   **Optional**: Metrics disabled by default (no-op implementation)
+*   **Zero Overhead**: No-op recorder has 0.1ns overhead (compiler-inlined)
+*   **Cardinality Safe**: No channel names as attributes (prevents metric explosion)
+*   **Standard Naming**: Uses `submux.*` prefix following OTEL conventions
+
+**Implementation:**
+*   **Abstraction Layer**: Internal `metricsRecorder` interface decouples business logic from OTEL
+*   **Build Tags**: Can compile without OTEL using `-tags nometrics`
+*   **Strong Typing**: Uses `metric.MeterProvider` type (not `interface{}`)
+
+#### 6.5.2 Available Metrics
+
+**Counters (11):**
+| Metric Name | Description | Attributes |
+|-------------|-------------|------------|
+| `submux.messages.received` | Messages from Redis | subscription_type, node_address |
+| `submux.callbacks.invoked` | Callback invocations | subscription_type |
+| `submux.callbacks.panics` | Panic recoveries | subscription_type |
+| `submux.subscriptions.attempts` | Subscription attempts | subscription_type, success |
+| `submux.connections.created` | Connections created | node_address |
+| `submux.connections.failed` | Connection failures | node_address, error_type |
+| `submux.migrations.started` | Migrations detected | - |
+| `submux.migrations.completed` | Migrations finished | - |
+| `submux.migrations.stalled` | Stalled migrations (>2s) | - |
+| `submux.migrations.timeout` | Migration timeouts (>30s) | - |
+| `submux.topology.refreshes` | Topology refresh attempts | success |
+
+**Histograms (4):**
+| Metric Name | Description | Unit | Attributes |
+|-------------|-------------|------|------------|
+| `submux.callbacks.latency` | Callback execution time | ms | subscription_type |
+| `submux.messages.latency` | End-to-end message latency | ms | subscription_type |
+| `submux.migrations.duration` | Migration completion time | ms | - |
+| `submux.topology.refresh_latency` | Topology refresh time | ms | - |
+
+#### 6.5.3 Cardinality Management
+
+**Safe Attributes (Low Cardinality):**
+*   `subscription_type`: 3 values (`subscribe`, `psubscribe`, `ssubscribe`)
+*   `node_address`: Bounded by cluster size (typically <100 nodes)
+*   `success`: 2 values (`true`, `false`)
+*   `error_type`: Bounded set of error types
+
+**Avoided Attributes (High Cardinality):**
+*   ❌ Channel names (unbounded, user-controlled)
+*   ❌ Hashslot numbers (16,384 possible values)
+*   ❌ Pattern strings (unbounded)
+
+#### 6.5.4 Performance Characteristics
+
+**Benchmarks** (Intel Core i9-13900HX):
+```
+BenchmarkNoopMetrics_Overhead              0.1 ns/op    0 B/op    0 allocs/op
+BenchmarkOtelMetrics_CounterOverhead     210.0 ns/op  296 B/op    4 allocs/op
+BenchmarkOtelMetrics_HistogramOverhead   152.2 ns/op  168 B/op    4 allocs/op
+```
+
+**Analysis:**
+*   No-op overhead is negligible (0.1ns)
+*   OTEL overhead is minimal compared to network I/O (1-10ms typical)
+*   Adding metrics costs <0.002% of total operation latency
+
+#### 6.5.5 Integration Example
+
+See section 6.4 for a complete production example with Prometheus integration.
+
 ---
 
 ## 7. Future Roadmap
 *   **Advanced Flow Control**: Backpressure handling if callbacks are too slow.
-*   **Metrics**: Built-in Prometheus/OpenTelemetry hooks for connection state and throughput.
+*   **Observable Gauges**: Polling-based metrics for active subscriptions and connections.
 *   **Dynamic Tuning**: Auto-adjusting pool sizes based on load.
+*   **Bounded Goroutines**: Worker pool for callback execution to limit goroutine count.

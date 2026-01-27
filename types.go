@@ -35,6 +35,10 @@ type Message struct {
 
 	// Timestamp is when the message was received.
 	Timestamp time.Time
+
+	// SubscriptionType indicates the subscription method (subscribe, psubscribe, ssubscribe).
+	// Used internally for metrics attribution.
+	SubscriptionType subscriptionType
 }
 
 // SignalInfo contains information about cluster topology changes or hashslot migrations.

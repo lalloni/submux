@@ -203,6 +203,9 @@ func New(clusterClient *redis.ClusterClient, opts ...Option) (*SubMux, error) {
 		opt(cfg)
 	}
 
+	// Create metrics recorder from configured MeterProvider
+	cfg.recorder = newMetricsRecorder(cfg.meterProvider, cfg.logger)
+
 	// Create PubSub pool
 	pool := newPubSubPool(clusterClient, cfg)
 
@@ -354,6 +357,9 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 
 		// Send command
 		if err := meta.sendCommand(ctx, cmd); err != nil {
+			// Record failed subscription attempt
+			sm.config.recorder.recordSubscriptionAttempt(subscriptionTypeToString(subType), false)
+
 			// Remove from pending list on error
 			meta.removePendingSubscription(channel)
 			// Cleanup on error
@@ -376,6 +382,9 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 
 		// Wait for confirmation (subscription is already in pending list)
 		if err := sub.waitForConfirmation(ctx); err != nil {
+			// Record failed subscription attempt
+			sm.config.recorder.recordSubscriptionAttempt(subscriptionTypeToString(subType), false)
+
 			// Cleanup on error
 			sm.mu.Lock()
 			subs := sm.subscriptions[channel]
@@ -395,6 +404,9 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 
 		// Check if subscription is in failed state
 		if sub.getState() == subStateFailed {
+			// Record failed subscription attempt
+			sm.config.recorder.recordSubscriptionAttempt(subscriptionTypeToString(subType), false)
+
 			sm.mu.Lock()
 			subs := sm.subscriptions[channel]
 			for i, s := range subs {
@@ -415,6 +427,9 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 		// (the connection is already subscribed to this channel)
 		sub.setState(subStateActive, nil)
 	}
+
+	// Record successful subscription attempt
+	sm.config.recorder.recordSubscriptionAttempt(subscriptionTypeToString(subType), true)
 
 	return sub, nil
 }

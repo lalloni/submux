@@ -314,6 +314,8 @@ func (tm *topologyMonitor) monitor() {
 // It first calls ReloadState() to update the ClusterClient's internal state,
 // then fetches ClusterSlots() to get the slot information for comparison.
 func (tm *topologyMonitor) refreshTopology() error {
+	startTime := time.Now()
+
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -394,6 +396,9 @@ func (tm *topologyMonitor) refreshTopology() error {
 	}
 
 	if err != nil {
+		// Record failed topology refresh
+		tm.config.recorder.recordTopologyRefresh(false)
+		tm.config.recorder.recordTopologyRefreshLatency(time.Since(startTime))
 		return fmt.Errorf("failed to get cluster slots (tried main client and seed nodes): %w", err)
 	}
 
@@ -417,6 +422,10 @@ func (tm *topologyMonitor) refreshTopology() error {
 		tm.handleMigrations(migrations)
 	}
 
+	// Record successful topology refresh
+	tm.config.recorder.recordTopologyRefresh(true)
+	tm.config.recorder.recordTopologyRefreshLatency(time.Since(startTime))
+
 	return nil
 }
 
@@ -439,6 +448,9 @@ func (tm *topologyMonitor) handleMigration(migration hashslotMigration) {
 		// No subscriptions affected, nothing to do
 		return
 	}
+
+	// Record migration started metric
+	tm.config.recorder.recordMigrationStarted()
 
 	// Send signal message to all affected subscriptions
 	tm.sendSignalMessages(affectedSubs, migration)
@@ -479,20 +491,26 @@ func (tm *topologyMonitor) sendSignalMessages(subs []*subscription, migration ha
 		Details:   fmt.Sprintf("Hashslot %d migrated from %s to %s", migration.hashslot, migration.oldNode, migration.newNode),
 	}
 
-	msg := &Message{
-		Type:      MessageTypeSignal,
-		Signal:    signal,
-		Timestamp: time.Now(),
-	}
+	timestamp := time.Now()
 
 	// Send to all affected subscriptions
+	// Create a separate message copy for each subscription to avoid race conditions
 	for _, sub := range subs {
-		invokeCallback(tm.config.logger, sub.callback, msg)
+		msg := &Message{
+			Type:             MessageTypeSignal,
+			Signal:           signal,
+			Timestamp:        timestamp,
+			SubscriptionType: sub.subType,
+		}
+		invokeCallback(tm.config.logger, tm.config.recorder, sub.callback, msg)
 	}
 }
 
 // sendMigrationTimeoutSignal sends a signal message when migration resubscription exceeds the maximum duration.
 func (tm *topologyMonitor) sendMigrationTimeoutSignal(subs []*subscription, migration hashslotMigration, duration time.Duration) {
+	// Record migration timeout metric
+	tm.config.recorder.recordMigrationTimeout()
+
 	signal := &SignalInfo{
 		EventType: EventMigrationTimeout,
 		Hashslot:  migration.hashslot,
@@ -501,15 +519,18 @@ func (tm *topologyMonitor) sendMigrationTimeoutSignal(subs []*subscription, migr
 		Details:   fmt.Sprintf("Hashslot %d migration resubscription exceeded maximum duration of %v. Subscribers may need to manually resubscribe.", migration.hashslot, duration),
 	}
 
-	msg := &Message{
-		Type:      MessageTypeSignal,
-		Signal:    signal,
-		Timestamp: time.Now(),
-	}
+	timestamp := time.Now()
 
 	// Send to all affected subscriptions
+	// Create a separate message copy for each subscription to avoid race conditions
 	for _, sub := range subs {
-		invokeCallback(tm.config.logger, sub.callback, msg)
+		msg := &Message{
+			Type:             MessageTypeSignal,
+			Signal:           signal,
+			Timestamp:        timestamp,
+			SubscriptionType: sub.subType,
+		}
+		invokeCallback(tm.config.logger, tm.config.recorder, sub.callback, msg)
 	}
 
 	tm.config.logger.Warn("submux: migration timeout", "hashslot", migration.hashslot, "duration", duration)
@@ -517,6 +538,9 @@ func (tm *topologyMonitor) sendMigrationTimeoutSignal(subs []*subscription, migr
 
 // sendMigrationStalledSignal sends a signal message when migration resubscription appears to have stalled.
 func (tm *topologyMonitor) sendMigrationStalledSignal(subs []*subscription, migration hashslotMigration, stallDuration time.Duration) {
+	// Record migration stalled metric
+	tm.config.recorder.recordMigrationStalled()
+
 	signal := &SignalInfo{
 		EventType: EventMigrationStalled,
 		Hashslot:  migration.hashslot,
@@ -525,15 +549,18 @@ func (tm *topologyMonitor) sendMigrationStalledSignal(subs []*subscription, migr
 		Details:   fmt.Sprintf("Hashslot %d migration resubscription appears stalled (no progress for %v). Subscribers may need to manually resubscribe.", migration.hashslot, stallDuration),
 	}
 
-	msg := &Message{
-		Type:      MessageTypeSignal,
-		Signal:    signal,
-		Timestamp: time.Now(),
-	}
+	timestamp := time.Now()
 
 	// Send to all affected subscriptions
+	// Create a separate message copy for each subscription to avoid race conditions
 	for _, sub := range subs {
-		invokeCallback(tm.config.logger, sub.callback, msg)
+		msg := &Message{
+			Type:             MessageTypeSignal,
+			Signal:           signal,
+			Timestamp:        timestamp,
+			SubscriptionType: sub.subType,
+		}
+		invokeCallback(tm.config.logger, tm.config.recorder, sub.callback, msg)
 	}
 
 	tm.config.logger.Warn("submux: migration stalled", "hashslot", migration.hashslot, "duration", stallDuration)
@@ -601,6 +628,11 @@ func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscripti
 
 	// Wait for all spawned goroutines to complete before signaling done
 	wg.Wait()
+
+	// Record migration metrics
+	duration := time.Since(startTime)
+	tm.config.recorder.recordMigrationDuration(duration)
+	tm.config.recorder.recordMigrationCompleted()
 
 	// Signal monitoring goroutine to exit
 	close(doneCh)

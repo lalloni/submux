@@ -34,6 +34,9 @@ type pubSubMetadata struct {
 	// logger is the logger for this connection.
 	logger *slog.Logger
 
+	// recorder is the metrics recorder for this connection.
+	recorder metricsRecorder
+
 	// nodeAddr is the address of the Redis node.
 	nodeAddr string
 
@@ -440,6 +443,7 @@ func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*
 	meta := &pubSubMetadata{
 		pubsub:               pubsub,
 		logger:               p.config.logger.With("component", "pubsub_conn", "node", nodeAddr),
+		recorder:             p.config.recorder,
 		nodeAddr:             nodeAddr,
 		subscriptions:        make(map[string][]*subscription),
 		pendingSubscriptions: make(map[string]*subscription),
@@ -457,6 +461,9 @@ func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*
 	p.mu.Lock()
 	p.pubSubMetadata[pubsub] = meta
 	p.mu.Unlock()
+
+	// Record connection created metric
+	p.config.recorder.recordConnectionCreated(nodeAddr)
 
 	// Start single event loop goroutine
 	meta.wg.Add(1)

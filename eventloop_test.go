@@ -27,6 +27,7 @@ func newTestMetadata() *pubSubMetadata {
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
 		logger:               slog.Default(),
+		recorder:             &noopMetrics{},
 		nodeAddr:             "test:7000",
 	}
 }

@@ -203,16 +203,20 @@ func handleMessageFromPubSub(meta *pubSubMetadata, channel, payload string) erro
 		return nil
 	}
 
+	// Record message received metric
+	meta.recorder.recordMessageReceived("subscribe", meta.nodeAddr)
+
 	// Create message and invoke all callbacks
 	msg := &Message{
-		Type:      MessageTypeMessage,
-		Channel:   channel,
-		Payload:   payload,
-		Timestamp: time.Now(),
+		Type:             MessageTypeMessage,
+		Channel:          channel,
+		Payload:          payload,
+		Timestamp:        time.Now(),
+		SubscriptionType: subTypeSubscribe,
 	}
 
 	for _, sub := range subs {
-		invokeCallback(meta.logger, sub.callback, msg)
+		invokeCallback(meta.logger, meta.recorder, sub.callback, msg)
 	}
 	return nil
 }
@@ -225,17 +229,21 @@ func handlePMessageFromPubSub(meta *pubSubMetadata, pattern, channel, payload st
 		return nil
 	}
 
+	// Record message received metric
+	meta.recorder.recordMessageReceived("psubscribe", meta.nodeAddr)
+
 	// Create message and invoke all callbacks
 	msg := &Message{
-		Type:      MessageTypePMessage,
-		Pattern:   pattern,
-		Channel:   channel,
-		Payload:   payload,
-		Timestamp: time.Now(),
+		Type:             MessageTypePMessage,
+		Pattern:          pattern,
+		Channel:          channel,
+		Payload:          payload,
+		Timestamp:        time.Now(),
+		SubscriptionType: subTypePSubscribe,
 	}
 
 	for _, sub := range subs {
-		invokeCallback(meta.logger, sub.callback, msg)
+		invokeCallback(meta.logger, meta.recorder, sub.callback, msg)
 	}
 	return nil
 }
@@ -251,22 +259,30 @@ func handleSMessageFromPubSub(meta *pubSubMetadata, channel, payload string) err
 		return nil
 	}
 
+	// Record message received metric
+	meta.recorder.recordMessageReceived("ssubscribe", meta.nodeAddr)
+
 	// Create message and invoke all callbacks
 	msg := &Message{
-		Type:      MessageTypeSMessage,
-		Channel:   channel,
-		Payload:   payload,
-		Timestamp: time.Now(),
+		Type:             MessageTypeSMessage,
+		Channel:          channel,
+		Payload:          payload,
+		Timestamp:        time.Now(),
+		SubscriptionType: subTypeSSubscribe,
 	}
 
 	for _, sub := range subs {
-		invokeCallback(meta.logger, sub.callback, msg)
+		invokeCallback(meta.logger, meta.recorder, sub.callback, msg)
 	}
 	return nil
 }
 
 // notifySubscriptionsOfFailure notifies all subscriptions on this PubSub of a failure.
 func notifySubscriptionsOfFailure(meta *pubSubMetadata, err error) {
+	// Record connection failure metric
+	errorType := "connection_closed"
+	meta.recorder.recordConnectionFailed(meta.nodeAddr, errorType)
+
 	subs := meta.getAllSubscriptions()
 	for _, sub := range subs {
 		sub.setState(subStateFailed, err)
@@ -277,10 +293,11 @@ func notifySubscriptionsOfFailure(meta *pubSubMetadata, err error) {
 			Details:   err.Error(),
 		}
 		msg := &Message{
-			Type:      MessageTypeSignal,
-			Signal:    signal,
-			Timestamp: time.Now(),
+			Type:             MessageTypeSignal,
+			Signal:           signal,
+			Timestamp:        time.Now(),
+			SubscriptionType: sub.subType,
 		}
-		invokeCallback(meta.logger, sub.callback, msg)
+		invokeCallback(meta.logger, meta.recorder, sub.callback, msg)
 	}
 }
