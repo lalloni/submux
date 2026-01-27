@@ -2,9 +2,28 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+---
+
+## 📚 Documentation Structure
+
+**IMPORTANT: For all architectural, design, and API questions, consult [DESIGN.md](DESIGN.md) first.**
+
+- **[DESIGN.md](DESIGN.md)** - **PRIMARY TECHNICAL REFERENCE** for architecture, design patterns, API design, resilience, testing strategy, and best practices
+- **[README.md](README.md)** - User-facing quick start and installation guide
+- **[TODO.md](TODO.md)** - Project roadmap and pending work items
+- **[CHANGELOG.md](CHANGELOG.md)** - Release history and version changes
+
+**This file (CLAUDE.md)** contains only Claude Code-specific workflow guidance and development commands. All design decisions are documented in DESIGN.md.
+
+---
+
 ## Project Overview
 
 **submux** is a Go library that provides intelligent connection multiplexing for Redis Cluster Pub/Sub operations. It significantly reduces connection overhead by reusing connections based on hashslot routing, while maintaining topology awareness and resilience during cluster reconfigurations.
+
+**For detailed architecture, design patterns, and component descriptions:** See [DESIGN.md Section 2: Architecture](DESIGN.md#2-architecture)
+
+---
 
 ## Development Commands
 
@@ -29,6 +48,8 @@ go test -bench=. -benchmem
 
 **Important:** Integration tests automatically spawn real Redis Cluster instances (9 nodes: 3 shards with 1 master + 2 replicas each) on random ports. Tests typically complete in ~8 seconds due to parallel execution. Ensure `redis-server` and `redis-cli` are installed and in `$PATH`.
 
+**For complete testing strategy and test scenarios:** See [DESIGN.md Section 5: Testing Strategy](DESIGN.md#5-testing-strategy)
+
 ### Building and Linting
 
 ```bash
@@ -45,213 +66,95 @@ go fmt ./...
 staticcheck ./...
 ```
 
-## Architecture
+---
 
-### Core Components
+## Code Structure Quick Reference
 
-1. **SubMux** (`submux.go`): Main entry point wrapping `*redis.ClusterClient`. Routes subscriptions to appropriate connections and manages the subscription lifecycle. Provides three subscription methods:
-   - `SubscribeSync`: Regular SUBSCRIBE for exact channel matches
-   - `PSubscribeSync`: Pattern-based PSUBSCRIBE using glob-style patterns (`news:*`)
-   - `SSubscribeSync`: Sharded SSUBSCRIBE (Redis 7.0+) for cluster-aware pub/sub
+### Core Files
+- `submux.go` - Main API entry point (`SubMux` type, subscription methods)
+- `config.go` - Configuration options and defaults
+- `pool.go` - PubSub connection pool management
+- `eventloop.go` - Single event loop per connection (command sending + message receiving)
+- `topology.go` - Cluster topology monitoring and auto-resubscribe logic
+- `subscription.go` - Internal subscription state machine
+- `types.go` - Public types (`Message`, `SignalInfo`, event types)
+- `callback.go` - Callback invocation with panic recovery
+- `errors.go` - Exported error types
 
-2. **PubSub Pool** (`pool.go`): Manages physical `*redis.PubSub` connections indexed by hashslot and node address. Implements connection reuse logic and load balancing.
+### Metrics (OpenTelemetry)
+- `metrics.go` - Metrics abstraction interface and no-op implementation
+- `metrics_otel.go` - OpenTelemetry implementation (build tag: `!nometrics`)
+- `metrics_test.go` - Metrics unit tests and benchmarks
 
-3. **Event Loop** (`eventloop.go`): Each physical connection has a single goroutine (`runEventLoop`) that handles both:
-   - Sending commands to Redis (SUBSCRIBE/UNSUBSCRIBE/PSUBSCRIBE/SSUBSCRIBE)
-   - Receiving messages and subscription confirmations from Redis
+### Testing
+- `integration/` - Integration test suite with real Redis clusters
+- `testutil/` - Test helpers and mocks
 
-   This single-goroutine-per-connection design eliminates synchronization complexity.
+**For detailed component descriptions and responsibilities:** See [DESIGN.md Section 2.1: High-Level Design](DESIGN.md#21-high-level-design)
 
-4. **Topology Monitor** (`topology.go`): Background goroutine that polls cluster state, detects hashslot migrations, and coordinates auto-resubscribe operations. Uses hardcoded timeouts: 2s stall check, 30s migration timeout.
+---
 
-5. **Subscription** (`subscription.go`): Internal state machine tracking individual subscription lifecycle (Pending → Active → Failed/Closed).
-
-### Key Design Patterns
-
-**Hashslot-Based Routing**: All channels are mapped to hashslots using `CRC16(channel) % 16384`. Subscriptions for the same hashslot reuse the same connection. Supports Redis hashtag syntax (`{tag}`).
-
-**Connection Multiplexing**: Multiple callbacks can subscribe to the same channel on the same connection. The pool tracks active subscriptions per connection and only sends actual Redis commands when the first subscription to a channel occurs.
-
-**Signal Messages**: When topology changes are detected (migration, node failure), the system sends `MessageTypeSignal` to callbacks, allowing applications to react to cluster events even when auto-resubscribe is enabled.
-
-**Auto-Resubscribe**: When enabled (`WithAutoResubscribe(true)`), the system automatically handles hashslot migrations by:
-1. Detecting migration via topology diff
-2. Sending signal to callbacks
-3. Unsubscribing from old node
-4. Resubscribing to new node
-5. Monitoring for stalls (2s) and timeouts (30s)
-
-**Important:** Auto-resubscribe defaults to `false`. Must be explicitly enabled for automatic migration handling.
-
-**Node Distribution Strategy**: Subscriptions can be distributed across cluster nodes using three strategies:
-- **BalancedAll** (default): Distributes subscriptions equally across all nodes (masters + replicas) for optimal resource utilization
-- **PreferMasters**: Routes all subscriptions to master nodes only
-- **PreferReplicas**: Prefers replica nodes to protect write-saturated masters, falls back to masters if no replicas available
-
-The system always selects the least-loaded node within the chosen strategy.
-
-### Configuration Options
+## Configuration Options
 
 Available via `submux.New(clusterClient, options...)`:
 
-- `WithAutoResubscribe(bool)`: Enable automatic migration handling (default: `false`)
-- `WithNodePreference(NodePreference)`: Set node distribution strategy (default: `BalancedAll`)
-  - `PreferMasters`: All subscriptions to master nodes
-  - `BalancedAll`: Equal distribution across all nodes (recommended)
-  - `PreferReplicas`: Prefer replicas to protect write-heavy masters
-- `WithReplicaPreference(bool)`: **Deprecated** - Use `WithNodePreference()` instead
-- `WithTopologyPollInterval(time.Duration)`: Cluster topology refresh rate (default: `1s`, min: `100ms`)
-- `WithMinConnectionsPerNode(int)`: Minimum connection pool size per node (default: `1`)
-- `WithLogger(*slog.Logger)`: Custom structured logger (default: `slog.Default()`)
-- `WithMeterProvider(metric.MeterProvider)`: OpenTelemetry metrics provider for production observability (default: `nil`, metrics disabled)
-  - Exposes 21 metrics: 11 counters, 4 histograms, 2 observable gauges (planned)
-  - Metric prefix: `submux.*`
-  - Zero overhead when not configured (no-op implementation)
-  - See "OpenTelemetry Metrics" section below for details
+- `WithAutoResubscribe(bool)` - Enable automatic migration handling (default: `false`)
+- `WithNodePreference(NodePreference)` - Set node distribution strategy (default: `BalancedAll`)
+- `WithTopologyPollInterval(time.Duration)` - Cluster topology refresh rate (default: `1s`, min: `100ms`)
+- `WithMinConnectionsPerNode(int)` - Minimum connection pool size per node (default: `1`)
+- `WithMigrationTimeout(time.Duration)` - Maximum duration for migration resubscription (default: `30s`)
+- `WithMigrationStallCheck(time.Duration)` - How often to check for stalled migrations (default: `2s`)
+- `WithLogger(*slog.Logger)` - Custom structured logger (default: `slog.Default()`)
+- `WithMeterProvider(metric.MeterProvider)` - OpenTelemetry metrics provider (default: `nil`, metrics disabled)
 
-### Concurrency Model
+**For detailed configuration documentation:** See [DESIGN.md Section 4.3: Configuration Options](DESIGN.md#43-configuration-options)
 
-- All public APIs are thread-safe
-- Each PubSub connection has its own event loop goroutine
-- The topology monitor runs in a separate background goroutine
-- Callbacks are invoked asynchronously in separate goroutines (one per message)
-- Callbacks are wrapped with panic recovery (`callback.go`) - panics are logged but don't crash the system
-- Internal state is protected by mutexes (`sync.RWMutex` for reads, `sync.Mutex` for writes)
+---
 
-### Testing Architecture
+## Key Design Patterns (Summary)
 
-**Unit Tests**: Use `testutil/mock_cluster.go` to mock `ClusterClient` for isolated testing of hashslot calculation, pool management, and subscription state machines.
+**For complete design pattern documentation, consult [DESIGN.md Section 2](DESIGN.md#2-architecture)**
 
-**Integration Tests**: Located in `integration/`. The test harness (`cluster_setup.go`) manages real Redis clusters:
-- Finds available ports dynamically
-- Spawns redis-server processes with process group isolation
-- Configures cluster topology via redis-cli
-- Tears down cleanly after tests via signal handlers and `t.Cleanup()`
-- Test data written to `integration/testdata/` (auto-deleted)
+Quick reference:
+- **Hashslot-Based Routing**: `CRC16(channel) % 16384` - See [DESIGN.md 2.2](DESIGN.md#22-connection-multiplexing)
+- **Single Event Loop**: One goroutine per connection handles all I/O - See [DESIGN.md 2.3](DESIGN.md#23-single-event-loop-architecture)
+- **Auto-Resubscribe**: Automatic migration handling when enabled - See [DESIGN.md 3.2](DESIGN.md#32-migration-recovery-auto-resubscribe)
+- **Signal Messages**: Topology events sent to callbacks - See [DESIGN.md 3.2](DESIGN.md#32-migration-recovery-auto-resubscribe)
+- **Node Distribution**: Three strategies (BalancedAll, PreferMasters, PreferReplicas) - See [DESIGN.md 4.3](DESIGN.md#43-configuration-options)
 
-**Robust Process Cleanup**: The test infrastructure includes PID file tracking (`testdata/.redis-test-pids`) to ensure no orphaned redis-server processes survive interrupted test runs:
-- PIDs are recorded when processes start
-- On test startup, orphaned processes from previous runs are detected and killed
-- Signal handlers (SIGINT, SIGTERM, SIGQUIT) trigger cleanup before exit
-- Works even when tests are forcefully interrupted (Ctrl+C, timeout)
+---
 
-**Key Integration Test Files**:
-- `cluster_test.go`: Basic Pub/Sub functionality
-- `subscribe_test.go`: PSUBSCRIBE, SSUBSCRIBE, multiple callbacks
-- `topology_test.go`: Migration detection, signal messages, auto-resubscribe
-- `resiliency_test.go`: Replica failures, rolling restarts, chaos testing
-- `concurrency_test.go`: Race conditions, concurrent subscriptions
-- `load_test.go`: High throughput, memory usage
-
-## Important Implementation Details
-
-### Exported Errors
-
-The package exports the following sentinel errors (`errors.go`):
-
-- `ErrInvalidClusterClient`: Returned when nil or invalid cluster client is provided to `New()`
-- `ErrInvalidChannel`: Returned when channel name is empty or invalid
-- `ErrSubscriptionFailed`: Returned when subscription operation fails
-- `ErrConnectionFailed`: Returned when connection to Redis node fails
-- `ErrClosed`: Returned when operation is attempted on a closed SubMux
-
-### Subscription Types
+## Subscription Types
 
 submux supports three Redis pub/sub mechanisms:
 
-1. **SUBSCRIBE** (`SubscribeSync`): Exact channel name matching
-   - Use for: Known, specific channel names
-   - Example: `["orders", "payments"]`
-   - Message type: `MessageTypeMessage`
+1. **SUBSCRIBE** (`SubscribeSync`) - Exact channel name matching
+2. **PSUBSCRIBE** (`PSubscribeSync`) - Glob-style pattern matching (`news:*`)
+3. **SSUBSCRIBE** (`SSubscribeSync`) - Sharded pub/sub (Redis 7.0+)
 
-2. **PSUBSCRIBE** (`PSubscribeSync`): Glob-style pattern matching
-   - Use for: Subscribing to multiple channels with a pattern
-   - Example: `["news:*", "logs:error:*"]`
-   - Supports `?`, `*`, and `[abc]` wildcards
-   - Message type: `MessageTypePMessage`
-   - Message includes both `Channel` (actual) and `Pattern` (matched) fields
+**For detailed API documentation:** See [DESIGN.md Section 4: API Design](DESIGN.md#4-api-design)
 
-3. **SSUBSCRIBE** (`SSubscribeSync`): Sharded pub/sub (Redis 7.0+)
-   - Use for: Cluster-aware pub/sub with guaranteed node affinity
-   - Channels are explicitly sharded to specific cluster nodes
-   - Lower overhead than regular pub/sub in cluster mode
-   - Message type: `MessageTypeSMessage`
-   - **Note:** Requires Redis 7.0+ server
+---
 
-### Message Types
+## Message and Event Types
 
-The `Message` struct has a `Type` field that distinguishes:
-- `MessageTypeMessage`: Regular SUBSCRIBE message
-- `MessageTypePMessage`: Pattern PSUBSCRIBE message
-- `MessageTypeSMessage`: Sharded SSUBSCRIBE message (Redis 7.0+)
-- `MessageTypeSignal`: Topology change notification
+Messages have a `Type` field that distinguishes:
+- `MessageTypeMessage` - Regular SUBSCRIBE message
+- `MessageTypePMessage` - Pattern PSUBSCRIBE message
+- `MessageTypeSMessage` - Sharded SSUBSCRIBE message (Redis 7.0+)
+- `MessageTypeSignal` - Topology change notification
 
-**Callbacks MUST handle all message types**, especially `MessageTypeSignal` for production monitoring.
+Signal events include:
+- `EventNodeFailure` - Connection lost
+- `EventMigration` - Hashslot migration detected
+- `EventMigrationStalled` - Migration stalled (>2s)
+- `EventMigrationTimeout` - Migration timeout (>30s)
 
-### Event Types (Signals)
+**Callbacks MUST handle `MessageTypeSignal` for production monitoring.**
 
-When `msg.Type == MessageTypeSignal`, the `msg.Signal.EventType` field contains:
+**For complete message type documentation:** See [DESIGN.md Section 4.1: Core Types](DESIGN.md#41-core-types)
 
-- `EventNodeFailure`: Connection to Redis node was lost
-- `EventMigration`: Hashslot migration detected, resubscription initiated (if auto-resubscribe enabled)
-- `EventMigrationStalled`: Migration resubscription made no progress for 2+ seconds
-- `EventMigrationTimeout`: Migration resubscription did not complete within 30 seconds
-
-Applications should monitor these events for observability and alerting.
-
-### Subscription Lifecycle
-
-All subscription methods (`SubscribeSync`, `PSubscribeSync`, `SSubscribeSync`) are synchronous - they wait for Redis confirmation before returning:
-
-1. Method call creates internal `subscription` objects (one per channel/pattern)
-2. Each subscription starts in `subStatePending`
-3. Command is sent via `cmdCh` to the event loop
-4. Event loop sends SUBSCRIBE/PSUBSCRIBE/SSUBSCRIBE to Redis
-5. Redis confirms with a subscription confirmation message
-6. Subscription transitions to `subStateActive`
-7. Method returns `(*Sub, error)` after confirmation or context timeout
-
-**Context Usage**: The `context.Context` parameter controls the subscription confirmation timeout. If the context expires before Redis confirms, the method returns `context.DeadlineExceeded` or `context.Canceled`.
-
-### Sub and Unsubscribe
-
-The `Sub` type represents a subscription handle returned by all subscription methods. It tracks multiple internal subscriptions (one per channel/pattern in the request).
-
-**`Sub.Unsubscribe(ctx context.Context) error`**: Unsubscribes ALL channels/patterns associated with this specific callback. This method:
-- Sends UNSUBSCRIBE commands for all channels
-- Removes the callback from the connection's subscription list
-- Does NOT close other callbacks subscribed to the same channels
-- Is idempotent - safe to call multiple times
-
-**Important:** Always defer cleanup: `defer sub.Unsubscribe(context.Background())`
-
-### Error Handling
-
-- Connection failures mark the connection state as `connStateFailed`
-- All subscriptions on a failed connection receive `node_failure` signals
-- The pool invalidates cached connections for the affected node
-- Subsequent operations create new connections
-- If auto-resubscribe is disabled, the application must handle resubscription manually
-
-### Hashslot Migration Detection
-
-submux uses two complementary mechanisms to detect topology changes:
-
-**1. Periodic Polling** (default 1s, configurable via `WithTopologyPollInterval`):
-1. Calls `ClusterClient.ReloadState()` to refresh cluster state
-2. Calls `ClusterSlots()` to get current topology
-3. Diffs against previous topology to detect:
-   - Hashslot ownership changes (migrations)
-   - Node additions/removals
-4. For each migrated hashslot, invalidates pool cache and triggers auto-resubscribe if enabled
-
-**2. Real-time MOVED/ASK Detection** (`eventloop.go`):
-When a subscription command fails with a MOVED or ASK error:
-1. `checkAndHandleRedirect()` detects the error using `redis.IsMovedError()` / `redis.IsAskError()`
-2. Immediately triggers `topologyMonitor.triggerRefresh()` for faster topology update
-3. This ensures migrations are detected without waiting for the next poll interval
-
-The combination provides both reliable periodic updates and fast reaction to actual redirects
+---
 
 ## Code Conventions
 
@@ -259,28 +162,33 @@ The combination provides both reliable periodic updates and fast reaction to act
 - Use `sync.Mutex` for connection pool and subscription state
 - Always defer cleanup: `defer sub.Unsubscribe(ctx)` and `defer subMux.Close()`
 - Callbacks should be fast; offload heavy work to queues
-- Integration tests with dedicated clusters use `t.Parallel()` for faster execution; tests using the shared cluster should be careful with concurrent modifications
+- Integration tests with dedicated clusters use `t.Parallel()` for faster execution
 - When modifying event loop, ensure commands and messages are handled atomically to avoid race conditions
+- **Never use `time.Sleep` in tests** - use event polling or channel synchronization
+
+**For complete best practices:** See [DESIGN.md Section 6: Best Practices](DESIGN.md#6-best-practices)
+
+---
 
 ## Common Gotchas
 
-1. **Auto-resubscribe is disabled by default**: Must explicitly enable with `WithAutoResubscribe(true)` for automatic migration handling.
+1. **Auto-resubscribe is disabled by default** - Must explicitly enable with `WithAutoResubscribe(true)`
+2. **Context timeouts apply to subscription confirmation** - Not to message delivery
+3. **Multiple subscriptions to same channel** - Each callback gets its own `Sub`; unsubscribe only removes that callback
+4. **Signal messages sent even with auto-resubscribe enabled** - Monitor these for observability
+5. **SSUBSCRIBE requires Redis 7.0+** - Use `SubscribeSync`/`PSubscribeSync` for older versions
+6. **Callbacks run in separate goroutines** - Must be thread-safe and non-blocking
+7. **Panic recovery** - Callbacks are wrapped with panic recovery; panics are logged but don't crash the system
 
-2. **Context timeouts apply to subscription confirmation**: A 1-second context timeout on `SubscribeSync` means Redis must confirm within 1 second, not that messages must arrive within 1 second.
+**For detailed gotcha explanations and solutions:** See [DESIGN.md Section 6: Best Practices](DESIGN.md#6-best-practices)
 
-3. **Multiple subscriptions to same channel**: Each callback gets its own subscription. Use `Sub.Unsubscribe()` to remove only your callback, not all callbacks for that channel.
-
-4. **Signal messages for all topology events**: Even with auto-resubscribe enabled, callbacks still receive signal messages. Applications should handle these for monitoring/alerting.
-
-5. **SSUBSCRIBE requires Redis 7.0+**: Attempting to use `SSubscribeSync` on older Redis versions will fail. Use `SubscribeSync` or `PSubscribeSync` instead.
-
-6. **Callbacks run in separate goroutines**: Each message invokes the callback in a new goroutine. Callbacks must be thread-safe and should not block.
+---
 
 ## OpenTelemetry Metrics
 
-submux provides optional OpenTelemetry instrumentation for production observability. Metrics are **opt-in** and have zero overhead when disabled.
+submux provides optional OpenTelemetry instrumentation with **zero overhead when disabled**.
 
-### Enabling Metrics
+### Quick Start
 
 ```go
 import (
@@ -289,66 +197,116 @@ import (
     "go.opentelemetry.io/otel/exporters/prometheus"
 )
 
-// Create Prometheus exporter
 exporter, _ := prometheus.New()
 provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exporter))
 
-// Create SubMux with metrics enabled
 subMux, _ := submux.New(clusterClient,
     submux.WithMeterProvider(provider),
     submux.WithAutoResubscribe(true),
 )
 ```
 
-### Available Metrics
+### Metrics Summary
 
-**Counters** (11):
-- `submux.messages.received` - Total messages from Redis (by subscription_type, node_address)
-- `submux.callbacks.invoked` - Total callback invocations (by subscription_type)
-- `submux.callbacks.panics` - Total panic recoveries in callbacks (by subscription_type)
-- `submux.subscriptions.attempts` - Subscription attempts (by subscription_type, success)
-- `submux.connections.created` - Connections created (by node_address)
-- `submux.connections.failed` - Connection failures (by node_address, error_type)
-- `submux.migrations.started` - Migrations detected
-- `submux.migrations.completed` - Migrations successfully completed
-- `submux.migrations.stalled` - Migrations with no progress (>2s)
-- `submux.migrations.timeout` - Migrations exceeding 30s
-- `submux.topology.refreshes` - Topology refresh attempts (by success)
+- **21 total metrics**: 11 counters, 4 histograms, 2 observable gauges (planned)
+- **Metric prefix**: `submux.*`
+- **Cardinality-safe**: No channel names as attributes
+- **Performance**: 0.1 ns/op (no-op), 150-210 ns/op (with OTEL)
 
-**Histograms** (4):
-- `submux.callbacks.latency` (ms) - Callback execution time (by subscription_type)
-- `submux.messages.latency` (ms) - Message receive to callback invocation latency (by subscription_type)
-- `submux.migrations.duration` (ms) - Time to complete migration resubscription
-- `submux.topology.refresh_latency` (ms) - Time to refresh cluster topology
+**Key metrics:**
+- Message throughput and latency
+- Connection creation and failures
+- Migration events and duration
+- Callback invocations and panics
+- Topology refresh operations
 
-**Observable Gauges** (2 - planned):
-- `submux.subscriptions.active` - Current subscriptions (by subscription_type)
-- `submux.connections.active` - Current connections (by node_address)
+**For complete metrics documentation:** See [DESIGN.md Section 6.5: Observability](DESIGN.md#65-observability)
 
-### Metric Attributes
+---
 
-All metrics use **low-cardinality attributes** to prevent metric explosion:
+## Testing Architecture
 
-- `subscription_type`: `subscribe` | `psubscribe` | `ssubscribe` (3 values)
-- `node_address`: Node address like `10.0.1.2:6379` (bounded by cluster size, typically <100)
-- `success`: `true` | `false` (2 values)
-- `error_type`: Bounded set of error types
+### Unit Tests
+Use `testutil/mock_cluster.go` to mock `ClusterClient` for isolated testing.
 
-**Important:** Channel names are **never used as attributes** to avoid unbounded cardinality.
+### Integration Tests
+Located in `integration/`. The test harness (`cluster_setup.go`) manages real Redis clusters with:
+- Dynamic port allocation
+- Process group isolation
+- PID file tracking for cleanup
+- Signal handlers for graceful shutdown
 
-### Performance
+**Key test files:**
+- `cluster_test.go` - Basic Pub/Sub functionality
+- `subscribe_test.go` - PSUBSCRIBE, SSUBSCRIBE, multiple callbacks
+- `topology_test.go` - Migration detection, signals, auto-resubscribe
+- `resiliency_test.go` - Replica failures, rolling restarts, chaos testing
+- `concurrency_test.go` - Race conditions, concurrent subscriptions
+- `load_test.go` - High throughput, memory usage
 
-- **No-op overhead**: 0.1 ns per operation (when metrics disabled)
-- **OTEL overhead**: 150-210 ns per operation (when metrics enabled)
-- **Zero allocations** for no-op recorder
-- **Compiler inlining**: No-op calls are completely optimized away
+**For complete testing strategy:** See [DESIGN.md Section 5: Testing Strategy](DESIGN.md#5-testing-strategy)
 
-### Building Without Metrics
+---
 
-To build with zero OpenTelemetry dependencies:
+## Concurrency Model
 
-```bash
-go build -tags nometrics -o myapp
-```
+- All public APIs are thread-safe
+- Each PubSub connection has its own event loop goroutine
+- Topology monitor runs in separate background goroutine
+- Callbacks invoked asynchronously (one goroutine per message)
+- Internal state protected by mutexes (`sync.RWMutex` for reads, `sync.Mutex` for writes)
 
-This removes all OTEL code at compile time.
+**For detailed concurrency patterns:** See [DESIGN.md Section 2.3: Single Event Loop Architecture](DESIGN.md#23-single-event-loop-architecture)
+
+---
+
+## Exported Errors
+
+Sentinel errors defined in `errors.go`:
+- `ErrInvalidClusterClient` - Nil or invalid cluster client
+- `ErrInvalidChannel` - Empty or invalid channel name
+- `ErrSubscriptionFailed` - Subscription operation failed
+- `ErrConnectionFailed` - Connection to Redis node failed
+- `ErrClosed` - Operation on closed SubMux
+
+**For error handling patterns:** See [DESIGN.md Section 6.2: Error Handling](DESIGN.md#62-error-handling)
+
+---
+
+## When Making Changes
+
+### Architecture/Design Changes
+1. **Update [DESIGN.md](DESIGN.md) first** - It's the source of truth
+2. Implement the change
+3. Update this file (CLAUDE.md) only if workflow/tooling changes
+4. Update README.md if user-facing API changes
+
+### Testing Changes
+1. Run all tests: `go test ./... -v -race`
+2. Verify integration tests pass
+3. Check for race conditions (always use `-race` flag)
+4. Update test documentation in DESIGN.md if test strategy changes
+
+### Metrics Changes
+1. Update metrics implementation in `metrics_otel.go`
+2. Update metrics tests in `metrics_test.go`
+3. Update metrics documentation in DESIGN.md Section 6.5
+4. Run benchmarks to verify performance: `go test -bench=BenchmarkNoopMetrics -benchmem`
+
+---
+
+## Quick Decision Tree
+
+**"Where should I look for information about..."**
+
+- **Architecture/Design patterns?** → [DESIGN.md Section 2](DESIGN.md#2-architecture)
+- **Configuration options?** → [DESIGN.md Section 4.3](DESIGN.md#43-configuration-options)
+- **API usage?** → [DESIGN.md Section 4](DESIGN.md#4-api-design)
+- **Testing strategy?** → [DESIGN.md Section 5](DESIGN.md#5-testing-strategy)
+- **Best practices?** → [DESIGN.md Section 6](DESIGN.md#6-best-practices)
+- **Metrics/Observability?** → [DESIGN.md Section 6.5](DESIGN.md#65-observability)
+- **Development commands?** → This file (CLAUDE.md)
+- **User quick start?** → [README.md](README.md)
+- **Pending work?** → [TODO.md](TODO.md)
+
+**When in doubt: Start with [DESIGN.md](DESIGN.md)**
