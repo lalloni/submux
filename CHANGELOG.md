@@ -2,6 +2,74 @@
 
 All notable changes to the submux project will be documented in this file.
 
+## [2.2.0] - 2026-01-26
+
+### Added
+- **OpenTelemetry Metrics Integration**: Production-ready observability with 21 metrics (11 counters, 4 histograms, 2 observable gauges planned).
+  - Optional dependency: Metrics disabled by default with zero overhead (0.1 ns/op)
+  - Opt-in activation via `WithMeterProvider(metric.MeterProvider)` configuration
+  - Cardinality-safe design: No channel names as attributes
+  - Build tag support: Compile without OTEL using `-tags nometrics`
+  - Performance: 150-210 ns/op overhead when enabled (minimal impact)
+  - Metrics cover: message throughput, callback latency, connection lifecycle, migrations, topology events
+  - Complete documentation in DESIGN.md Section 6.5: Observability
+  - Full test coverage with benchmarks
+
+### Changed
+- **Documentation Consolidation**: Restructured all documentation to eliminate duplication and establish clear hierarchy.
+  - **DESIGN.md**: Now the single source of truth for all architectural and design decisions (355 lines)
+  - **AGENTS.md**: Consolidated all agent instructions and workflows into single comprehensive guide (402 lines)
+  - **CLAUDE.md**: Simplified to minimal entry point that redirects to AGENTS.md (39 lines)
+  - Benefits: Zero duplication, clearer hierarchy, easier maintenance, prevents documentation drift
+  - Added 70 cross-references between documentation files
+  - Clear update workflow: "Update DESIGN.md first" for design changes
+
+### Fixed
+- **Race Conditions in Unsubscribe**: Eliminated data races when multiple goroutines concurrently unsubscribe from the same channels.
+  - Fixed race condition in signal message delivery by creating separate message copies per subscription
+  - Fixed race in subscription state management during concurrent unsubscribe operations
+  - All tests pass with `-race` flag
+- **Port Conflicts in Tests**: Implemented global port allocator to eliminate port conflicts in integration tests.
+  - Centralized port allocation prevents flaky test failures
+  - Supports parallel test execution without conflicts
+- **Test Execution Time**: Reduced integration test time by 30% (from ~12s to ~8s).
+  - Eliminated timed waits (`time.Sleep`) in favor of event-driven synchronization
+  - Tests now use channel communication and polling for robust timing
+  - Improved test reliability while accelerating execution
+
+### Documentation
+- Added comprehensive OpenTelemetry metrics documentation to DESIGN.md, README.md, and AGENTS.md
+- Established clear documentation hierarchy: DESIGN.md → AGENTS.md → CLAUDE.md
+- Added "Quick Decision Tree" in AGENTS.md to guide agents to correct documentation
+- Updated TODO.md to mark OpenTelemetry integration as completed
+
+### Technical Details
+- **Metrics Files**:
+  - `metrics.go` - Abstraction interface and no-op implementation
+  - `metrics_otel.go` - OpenTelemetry implementation with build tag `!nometrics`
+  - `metrics_test.go` - Unit tests and benchmarks
+- **Config Changes**: Added `recorder metricsRecorder` field initialized in `defaultConfig()`
+- **Integration**: Metrics recording integrated across 7 core files (callback.go, eventloop.go, pool.go, submux.go, topology.go, types.go, config.go)
+- **Bug Fixes**: Fixed nil recorder bug and race conditions in signal message delivery
+
+## [2.1.1] - 2026-01-10
+
+### Fixed
+- **Integration Test Stability**: Improved test reliability and execution speed.
+  - Fixed race conditions in concurrent subscription tests
+  - Accelerated integration tests through better synchronization
+  - Enhanced test infrastructure robustness
+- **Test Infrastructure**: Improved integration test stability and reduced flakiness.
+  - Better handling of concurrent operations
+  - Improved timing synchronization in tests
+  - More reliable cluster state detection
+
+### Changed
+- **Test Quality**: Comprehensive test improvements and race condition fixes.
+  - All tests now pass reliably with `-race` flag
+  - Reduced test flakiness in concurrent scenarios
+  - Better test isolation and cleanup
+
 ## [2.1.0] - 2026-01-09
 
 ### Added
