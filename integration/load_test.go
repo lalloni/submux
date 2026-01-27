@@ -61,11 +61,19 @@ func TestHighSubscriptionCount(t *testing.T) {
 		}
 	}
 
-	// Wait for messages
-	time.Sleep(200 * time.Millisecond)
-
-	received := atomic.LoadInt64(&messageCount)
-	if received < int64(len(testChannels)) {
+	// Wait for messages with polling
+	expectedMessages := int64(len(testChannels))
+	deadline := time.Now().Add(500 * time.Millisecond)
+	var received int64
+	for time.Now().Before(deadline) {
+		received = atomic.LoadInt64(&messageCount)
+		if received >= expectedMessages {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	received = atomic.LoadInt64(&messageCount)
+	if received < expectedMessages {
 		t.Errorf("Expected at least %d messages, got %d", len(testChannels), received)
 	}
 
@@ -157,7 +165,7 @@ func TestHighMessageThroughput(t *testing.T) {
 	}
 
 	// Give subscription time to establish
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	// Publish messages at high rate
 	pubClient := cluster.GetClusterClient()

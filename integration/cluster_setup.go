@@ -175,7 +175,7 @@ func killOrphanedProcesses() {
 		_ = proc.Signal(syscall.SIGTERM)
 
 		// Wait briefly for graceful shutdown
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		// Check if still running, force kill if needed
 		if err := proc.Signal(syscall.Signal(0)); err == nil {
@@ -948,7 +948,7 @@ func (tc *TestCluster) waitForSlotConvergence(ctx context.Context, slot int, exp
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(50 * time.Millisecond):
 			// Continue polling
 		}
 	}

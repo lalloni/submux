@@ -181,7 +181,7 @@ func TestAutoResubscribe(t *testing.T) {
 	// Wait for migration detection and resubscription
 	// MigrateHashslot now waits for cluster convergence, but we still need
 	// to allow time for the topology monitor to poll and detect the change.
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
 
 	// Reload state to ensure client knows about new topology for correct routing
 	client.ReloadState(context.Background())
@@ -294,7 +294,7 @@ func TestManualResubscribe(t *testing.T) {
 	}
 
 	// Wait a bit to ensure we would have missed messages if we didn't resubscribe
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	// Reload state to ensure client knows about new topology for correct routing
 	client.ReloadState(context.Background())
@@ -420,8 +420,8 @@ func TestNodeFailure_SubscriptionContinuation(t *testing.T) {
 
 	// Wait for cluster specific state to become OK via another node
 	ok := false
-	for i := 0; i < 30; i++ {
-		time.Sleep(200 * time.Millisecond)
+	for i := 0; i < 120; i++ {
+		time.Sleep(50 * time.Millisecond)
 
 		// Get a living node client
 		var checkClient *redis.Client
@@ -947,7 +947,7 @@ func TestTopologyRefreshOnSubscriptionAfterMigration(t *testing.T) {
 	}
 
 	// Wait a moment for migration to complete
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	// Now try to subscribe to another channel on the same hashslot
 	// This should trigger MOVED detection when it tries to use the old connection
@@ -994,7 +994,7 @@ drainSignals:
 			if signalCount > 0 {
 				break drainSignals
 			}
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 

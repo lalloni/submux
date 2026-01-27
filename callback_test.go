@@ -50,7 +50,9 @@ func TestInvokeCallback_Normal(t *testing.T) {
 func TestInvokeCallback_PanicRecovery(t *testing.T) {
 	logger := slog.Default()
 
+	done := make(chan struct{})
 	panicCallback := func(msg *Message) {
+		defer close(done)
 		panic("test panic")
 	}
 
@@ -62,8 +64,8 @@ func TestInvokeCallback_PanicRecovery(t *testing.T) {
 	// This should not panic the test - panic should be recovered
 	invokeCallback(logger, panicCallback, testMsg)
 
-	// Give time for the goroutine to complete
-	time.Sleep(20 * time.Millisecond)
+	// Wait for callback to complete
+	<-done
 
 	// If we reach here without panicking, the test passes
 }
@@ -71,7 +73,9 @@ func TestInvokeCallback_PanicRecovery(t *testing.T) {
 func TestInvokeCallback_PanicWithNil(t *testing.T) {
 	logger := slog.Default()
 
+	done := make(chan struct{})
 	panicCallback := func(msg *Message) {
+		defer close(done)
 		panic(nil)
 	}
 
@@ -80,14 +84,16 @@ func TestInvokeCallback_PanicWithNil(t *testing.T) {
 	// Should handle panic(nil) gracefully
 	invokeCallback(logger, panicCallback, testMsg)
 
-	time.Sleep(20 * time.Millisecond)
+	<-done
 	// If we reach here, the test passes
 }
 
 func TestInvokeCallback_PanicWithError(t *testing.T) {
 	logger := slog.Default()
 
+	done := make(chan struct{})
 	panicCallback := func(msg *Message) {
+		defer close(done)
 		panic("custom error message")
 	}
 
@@ -95,7 +101,7 @@ func TestInvokeCallback_PanicWithError(t *testing.T) {
 
 	invokeCallback(logger, panicCallback, testMsg)
 
-	time.Sleep(20 * time.Millisecond)
+	<-done
 	// If we reach here, the test passes
 }
 
@@ -263,7 +269,7 @@ func TestInvokeCallback_SlowCallback(t *testing.T) {
 	var completed atomic.Bool
 
 	slowCallback := func(msg *Message) {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 		completed.Store(true)
 	}
 
@@ -277,7 +283,7 @@ func TestInvokeCallback_SlowCallback(t *testing.T) {
 	}
 
 	// Wait for the callback to complete
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
 
 	if !completed.Load() {
 		t.Error("slow callback did not complete")

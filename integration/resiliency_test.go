@@ -189,7 +189,7 @@ func TestReplicaFailure_Recovery(t *testing.T) {
 	t.Log("Publishing messages during failure...")
 
 	// Give a small moment for disconnect detection
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
 
 	receivedRecovery := false
 RecoveryLoop:
@@ -206,7 +206,7 @@ RecoveryLoop:
 				receivedRecovery = true
 				break RecoveryLoop
 			}
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(200 * time.Millisecond):
 			// retry
 		}
 	}
@@ -278,7 +278,7 @@ func TestRollingRestart_Stability(t *testing.T) {
 			}
 
 			// Wait random interval
-			time.Sleep(time.Duration(500+rnd.Intn(500)) * time.Millisecond)
+			time.Sleep(time.Duration(200+rnd.Intn(300)) * time.Millisecond)
 
 			if ctx.Err() != nil {
 				return
@@ -297,7 +297,7 @@ func TestRollingRestart_Stability(t *testing.T) {
 			}
 
 			// Wait a bit (simulate downtime)
-			time.Sleep(1 * time.Second)
+			time.Sleep(500 * time.Millisecond)
 
 			// Check context again before starting (avoid cleanup race)
 			if ctx.Err() != nil {
