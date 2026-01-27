@@ -34,13 +34,35 @@ This document provides a high-level overview of the **submux** project for AI ag
 
 ---
 
-## 📂 Directory Structure
+## 📂 Directory Structure and Key Files
 
-| Path | Description | Key Files |
-|------|-------------|-----------|
-| `/` | Root package (public API) | `submux.go`, `config.go`, `pool.go`, `topology.go` |
-| `integration/` | Integration test suite | `cluster_setup.go`, `topology_test.go`, `resiliency_test.go` |
-| `testutil/` | Test helpers and mocks | `mock_cluster.go` |
+### Root Package (Public API)
+- `submux.go` - Main API entry point (`SubMux` type, subscription methods)
+- `config.go` - Configuration options and defaults
+- `pool.go` - PubSub connection pool management
+- `eventloop.go` - Single event loop per connection (command sending + message receiving)
+- `topology.go` - Cluster topology monitoring and auto-resubscribe logic
+- `subscription.go` - Internal subscription state machine
+- `types.go` - Public types (`Message`, `SignalInfo`, event types)
+- `callback.go` - Callback invocation with panic recovery
+- `errors.go` - Exported error types
+
+### Metrics (OpenTelemetry)
+- `metrics.go` - Metrics abstraction interface and no-op implementation
+- `metrics_otel.go` - OpenTelemetry implementation (build tag: `!nometrics`)
+- `metrics_test.go` - Metrics unit tests and benchmarks
+
+### Testing
+- `integration/` - Integration test suite with real Redis clusters
+  - `cluster_setup.go` - Test infrastructure and cluster management
+  - `cluster_test.go` - Basic Pub/Sub functionality
+  - `subscribe_test.go` - PSUBSCRIBE, SSUBSCRIBE, multiple callbacks
+  - `topology_test.go` - Migration detection, signals, auto-resubscribe
+  - `resiliency_test.go` - Replica failures, rolling restarts, chaos testing
+  - `concurrency_test.go` - Race conditions, concurrent subscriptions
+  - `load_test.go` - High throughput, memory usage
+- `testutil/` - Test helpers and mocks
+  - `mock_cluster.go` - Mock ClusterClient for unit tests
 
 **For detailed component descriptions:** See [DESIGN.md Section 2.1: High-Level Design](DESIGN.md#21-high-level-design)
 
@@ -69,6 +91,18 @@ This document provides a high-level overview of the **submux** project for AI ag
 - **Auto-Resubscribe**: Automatic migration handling when enabled via `WithAutoResubscribe(true)` - See [DESIGN.md 3.2](DESIGN.md#32-migration-recovery-auto-resubscribe)
 - **Signal Messages**: Topology events sent to callbacks for monitoring - See [DESIGN.md 3.2](DESIGN.md#32-migration-recovery-auto-resubscribe)
 - **Topology Awareness**: Dual detection (polling + MOVED/ASK errors) - See [DESIGN.md 3.1](DESIGN.md#31-topology-change-detection)
+
+### Concurrency Model
+
+**⚠️ For complete concurrency patterns, see [DESIGN.md Section 2.3](DESIGN.md#23-single-event-loop-architecture)**
+
+Key concurrency characteristics:
+- **All public APIs are thread-safe** - Safe to call from multiple goroutines
+- **Single event loop per connection** - Each PubSub connection has one goroutine
+- **Topology monitor** - Separate background goroutine polls cluster state
+- **Callback invocation** - Each message spawns a new goroutine for the callback
+- **Panic recovery** - Callbacks wrapped with recovery; panics logged but don't crash
+- **State protection** - `sync.RWMutex` for topology (many readers), `sync.Mutex` for pool/subscriptions
 
 ---
 
@@ -104,6 +138,35 @@ go test -bench=. -benchmem
 - **Cleanup**: Automatic via PID tracking and signal handlers
 
 **For detailed test infrastructure:** See [DESIGN.md Section 5: Testing Strategy](DESIGN.md#5-testing-strategy)
+
+---
+
+## 🔨 Building and Linting
+
+### Build Commands
+
+```bash
+# Build the project
+go build
+
+# Build without OpenTelemetry dependencies
+go build -tags nometrics -o submux-nometrics
+```
+
+### Code Quality Tools
+
+```bash
+# Format code (run before every commit)
+go fmt ./...
+
+# Static analysis
+go vet ./...
+
+# Advanced static analysis (if available)
+staticcheck ./...
+```
+
+**Always run these before committing** - See [Critical Rules](#️-critical-rules---must-follow) below.
 
 ---
 
@@ -221,6 +284,21 @@ All methods are **synchronous** - they block until Redis confirms the subscripti
 
 ---
 
+## 🚫 Exported Errors
+
+**For error handling patterns:** See [DESIGN.md Section 6.2: Error Handling](DESIGN.md#62-error-handling)
+
+Sentinel errors defined in `errors.go`:
+- `ErrInvalidClusterClient` - Nil or invalid cluster client provided to `New()`
+- `ErrInvalidChannel` - Empty or invalid channel name
+- `ErrSubscriptionFailed` - Subscription operation failed
+- `ErrConnectionFailed` - Connection to Redis node failed
+- `ErrClosed` - Operation attempted on closed SubMux
+
+Use these with `errors.Is()` for error checking.
+
+---
+
 ## 📈 OpenTelemetry Metrics
 
 **For complete metrics documentation:** See [DESIGN.md Section 6.5: Observability](DESIGN.md#65-observability)
@@ -264,7 +342,7 @@ Enable with `WithMeterProvider(provider)` configuration option.
 | Best practices | [DESIGN.md Section 6](DESIGN.md#6-best-practices) |
 | Metrics/Observability | [DESIGN.md Section 6.5](DESIGN.md#65-observability) |
 | Topology/Resilience | [DESIGN.md Section 3](DESIGN.md#3-resilience-and-topology-handling) |
-| Development commands | [CLAUDE.md](CLAUDE.md) or this file |
+| Development commands | This file (sections above) |
 | User quick start | [README.md](README.md) |
 | Pending work | [TODO.md](TODO.md) |
 
