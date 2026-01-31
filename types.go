@@ -1,6 +1,20 @@
 package submux
 
-import "time"
+import (
+	"context"
+	"time"
+)
+
+// Redis subscription message kinds.
+// These are the values returned by redis.Subscription.Kind.
+const (
+	redisKindSubscribe    = "subscribe"
+	redisKindPSubscribe   = "psubscribe"
+	redisKindSSubscribe   = "ssubscribe"
+	redisKindUnsubscribe  = "unsubscribe"
+	redisKindPUnsubscribe = "punsubscribe"
+	redisKindSUnsubscribe = "sunsubscribe"
+)
 
 // MessageType represents the type of a message received from a subscription.
 type MessageType int
@@ -93,8 +107,9 @@ const (
 )
 
 // MessageCallback is a function type for handling subscription events (messages and signal notifications).
-// Callbacks are invoked asynchronously in separate goroutines and must be thread-safe.
-type MessageCallback func(msg *Message)
+// Callbacks are invoked asynchronously via a bounded worker pool and must be thread-safe.
+// The context is derived from the SubMux lifecycle and is canceled when Close() is called.
+type MessageCallback func(ctx context.Context, msg *Message)
 
 // Sub represents a subscription to one or more channels/patterns with a specific callback.
 // Sub is returned from SubscribeSync, PSubscribeSync, or SSubscribeSync and can be used
