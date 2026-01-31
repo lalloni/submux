@@ -230,6 +230,13 @@ go test -bench=. -benchmem
 - **Execution Time**: ~8 seconds (parallel execution)
 - **Cleanup**: Automatic via PID tracking and signal handlers
 
+### Test Utilities (integration/shared_cluster_test.go)
+
+- `getSharedCluster(t)` - Returns shared cluster for tests (avoids per-test cluster startup)
+- `uniqueChannel(base)` - Returns unique channel name to prevent test interference
+- `retryWithBackoff(t, attempts, delay, fn)` - Retry with exponential backoff for transient failures
+- `waitForCondition(t, timeout, poll, fn, desc)` - Poll until condition is true or timeout
+
 **For detailed test infrastructure:** See [DESIGN.md Section 5: Testing Strategy](DESIGN.md#5-testing-strategy)
 
 ---
