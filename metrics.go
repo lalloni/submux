@@ -45,18 +45,18 @@ func newMetricsRecorder(provider metric.MeterProvider, logger *slog.Logger) metr
 // All methods are empty and should be inlined by the compiler.
 type noopMetrics struct{}
 
-func (n *noopMetrics) recordMessageReceived(string, string)     {}
-func (n *noopMetrics) recordCallbackInvocation(string)          {}
-func (n *noopMetrics) recordCallbackPanic(string)               {}
-func (n *noopMetrics) recordSubscriptionAttempt(string, bool)   {}
-func (n *noopMetrics) recordConnectionCreated(string)           {}
-func (n *noopMetrics) recordConnectionFailed(string, string)    {}
-func (n *noopMetrics) recordMigrationStarted()                  {}
-func (n *noopMetrics) recordMigrationCompleted()                {}
-func (n *noopMetrics) recordMigrationStalled()                  {}
-func (n *noopMetrics) recordMigrationTimeout()                  {}
-func (n *noopMetrics) recordTopologyRefresh(bool)               {}
-func (n *noopMetrics) recordCallbackLatency(string, time.Duration)     {}
-func (n *noopMetrics) recordMessageLatency(string, time.Duration)      {}
-func (n *noopMetrics) recordMigrationDuration(time.Duration)           {}
-func (n *noopMetrics) recordTopologyRefreshLatency(time.Duration)      {}
+func (n *noopMetrics) recordMessageReceived(string, string)        {}
+func (n *noopMetrics) recordCallbackInvocation(string)             {}
+func (n *noopMetrics) recordCallbackPanic(string)                  {}
+func (n *noopMetrics) recordSubscriptionAttempt(string, bool)      {}
+func (n *noopMetrics) recordConnectionCreated(string)              {}
+func (n *noopMetrics) recordConnectionFailed(string, string)       {}
+func (n *noopMetrics) recordMigrationStarted()                     {}
+func (n *noopMetrics) recordMigrationCompleted()                   {}
+func (n *noopMetrics) recordMigrationStalled()                     {}
+func (n *noopMetrics) recordMigrationTimeout()                     {}
+func (n *noopMetrics) recordTopologyRefresh(bool)                  {}
+func (n *noopMetrics) recordCallbackLatency(string, time.Duration) {}
+func (n *noopMetrics) recordMessageLatency(string, time.Duration)  {}
+func (n *noopMetrics) recordMigrationDuration(time.Duration)       {}
+func (n *noopMetrics) recordTopologyRefreshLatency(time.Duration)  {}

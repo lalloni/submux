@@ -16,17 +16,17 @@ type otelMetrics struct {
 	logger *slog.Logger
 
 	// Counters
-	messagesReceived      metric.Int64Counter
-	callbacksInvoked      metric.Int64Counter
-	callbacksPanics       metric.Int64Counter
-	subscriptionAttempts  metric.Int64Counter
-	connectionsCreated    metric.Int64Counter
-	connectionsFailed     metric.Int64Counter
-	migrationsStarted     metric.Int64Counter
-	migrationsCompleted   metric.Int64Counter
-	migrationsStalled     metric.Int64Counter
-	migrationsTimeout     metric.Int64Counter
-	topologyRefreshes     metric.Int64Counter
+	messagesReceived     metric.Int64Counter
+	callbacksInvoked     metric.Int64Counter
+	callbacksPanics      metric.Int64Counter
+	subscriptionAttempts metric.Int64Counter
+	connectionsCreated   metric.Int64Counter
+	connectionsFailed    metric.Int64Counter
+	migrationsStarted    metric.Int64Counter
+	migrationsCompleted  metric.Int64Counter
+	migrationsStalled    metric.Int64Counter
+	migrationsTimeout    metric.Int64Counter
+	topologyRefreshes    metric.Int64Counter
 
 	// Histograms
 	callbackLatency        metric.Float64Histogram

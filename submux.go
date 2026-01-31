@@ -150,6 +150,7 @@ package submux
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/redis/go-redis/v9"
@@ -368,7 +369,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 			subs := sm.subscriptions[channel]
 			for i, s := range subs {
 				if s == sub {
-					sm.subscriptions[channel] = append(subs[:i], subs[i+1:]...)
+					sm.subscriptions[channel] = slices.Delete(subs, i, i+1)
 					break
 				}
 			}
@@ -390,7 +391,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 			subs := sm.subscriptions[channel]
 			for i, s := range subs {
 				if s == sub {
-					sm.subscriptions[channel] = append(subs[:i], subs[i+1:]...)
+					sm.subscriptions[channel] = slices.Delete(subs, i, i+1)
 					break
 				}
 			}
@@ -411,7 +412,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 			subs := sm.subscriptions[channel]
 			for i, s := range subs {
 				if s == sub {
-					sm.subscriptions[channel] = append(subs[:i], subs[i+1:]...)
+					sm.subscriptions[channel] = slices.Delete(subs, i, i+1)
 					break
 				}
 			}
@@ -500,7 +501,7 @@ func (sm *SubMux) unsubscribeSubscription(sub *Sub) error {
 		for _, internalSub := range internalSubs {
 			for i, s := range allSubs {
 				if s == internalSub {
-					sm.subscriptions[channel] = append(allSubs[:i], allSubs[i+1:]...)
+					sm.subscriptions[channel] = slices.Delete(allSubs, i, i+1)
 					allSubs = sm.subscriptions[channel]
 					break
 				}

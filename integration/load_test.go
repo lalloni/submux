@@ -36,11 +36,11 @@ func TestHighSubscriptionCount(t *testing.T) {
 	}
 
 	start := time.Now()
-	messageCount := int64(0)
+	var messageCount atomic.Int64
 
 	_, err = subMux.SubscribeSync(context.Background(), channels, func(msg *submux.Message) {
 		if msg.Type == submux.MessageTypeMessage {
-			atomic.AddInt64(&messageCount, 1)
+			messageCount.Add(1)
 		}
 	})
 	elapsed := time.Since(start)
@@ -66,13 +66,13 @@ func TestHighSubscriptionCount(t *testing.T) {
 	deadline := time.Now().Add(500 * time.Millisecond)
 	var received int64
 	for time.Now().Before(deadline) {
-		received = atomic.LoadInt64(&messageCount)
+		received = messageCount.Load()
 		if received >= expectedMessages {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	received = atomic.LoadInt64(&messageCount)
+	received = messageCount.Load()
 	if received < expectedMessages {
 		t.Errorf("Expected at least %d messages, got %d", len(testChannels), received)
 	}
@@ -148,13 +148,13 @@ func TestHighMessageThroughput(t *testing.T) {
 
 	channel := uniqueChannel("throughput")
 	expectedMessages := 10000
-	receivedCount := int64(0)
+	var receivedCount atomic.Int64
 	var mu sync.Mutex
 	receivedMessages := make(map[string]bool)
 
 	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(msg *submux.Message) {
 		if msg.Type == submux.MessageTypeMessage {
-			atomic.AddInt64(&receivedCount, 1)
+			receivedCount.Add(1)
 			mu.Lock()
 			receivedMessages[msg.Payload] = true
 			mu.Unlock()
@@ -198,7 +198,7 @@ func TestHighMessageThroughput(t *testing.T) {
 	defer ticker.Stop()
 
 	for {
-		received := atomic.LoadInt64(&receivedCount)
+		received := receivedCount.Load()
 		if received >= int64(expectedMessages) {
 			break
 		}
@@ -211,7 +211,7 @@ func TestHighMessageThroughput(t *testing.T) {
 	}
 
 	receiveTime := time.Since(start)
-	received := atomic.LoadInt64(&receivedCount)
+	received := receivedCount.Load()
 
 	publishRate := float64(expectedMessages) / publishTime.Seconds()
 	receiveRate := float64(received) / receiveTime.Seconds()
@@ -355,15 +355,15 @@ func TestLongRunningSubscriptions(t *testing.T) {
 	defer subMux.Close()
 
 	channel := uniqueChannel("long-running")
-	messageCount := int64(0)
-	errorCount := int64(0)
+	var messageCount atomic.Int64
+	var errorCount atomic.Int64
 
 	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(msg *submux.Message) {
 		switch msg.Type {
 		case submux.MessageTypeMessage:
-			atomic.AddInt64(&messageCount, 1)
+			messageCount.Add(1)
 		case submux.MessageTypeSignal:
-			atomic.AddInt64(&errorCount, 1)
+			errorCount.Add(1)
 			t.Logf("signal message: %+v", msg.Signal)
 		}
 	})
@@ -384,7 +384,7 @@ func TestLongRunningSubscriptions(t *testing.T) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
-	publishedCount := int64(0)
+	var publishedCount atomic.Int64
 	done := make(chan struct{})
 
 	go func() {
@@ -394,9 +394,9 @@ func TestLongRunningSubscriptions(t *testing.T) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				err := pubClient.Publish(ctx, channel, fmt.Sprintf("msg-%d", atomic.AddInt64(&publishedCount, 1))).Err()
+				err := pubClient.Publish(ctx, channel, fmt.Sprintf("msg-%d", publishedCount.Add(1))).Err()
 				if err != nil && ctx.Err() == nil {
-					atomic.AddInt64(&errorCount, 1)
+					errorCount.Add(1)
 				}
 			}
 		}
@@ -410,9 +410,9 @@ func TestLongRunningSubscriptions(t *testing.T) {
 	runtime.GC()
 	runtime.ReadMemStats(&m2)
 
-	received := atomic.LoadInt64(&messageCount)
-	published := atomic.LoadInt64(&publishedCount)
-	errors := atomic.LoadInt64(&errorCount)
+	received := messageCount.Load()
+	published := publishedCount.Load()
+	errors := errorCount.Load()
 
 	memDiff := int64(m2.Alloc) - int64(m1.Alloc)
 	memDiffKB := memDiff / 1024

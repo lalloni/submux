@@ -2,6 +2,7 @@ package submux
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/redis/go-redis/v9"
@@ -469,7 +470,7 @@ func TestPubSubPool_SelectLeastLoaded(t *testing.T) {
 	pubsubs := pool.hashslotPubSubs[100]
 
 	var selectedPubSub *redis.PubSub
-	minSubs := int(^uint(0) >> 1) // Max int
+	minSubs := math.MaxInt // Max int
 
 	for _, ps := range pubsubs {
 		meta := pool.pubSubMetadata[ps]
@@ -514,7 +515,7 @@ func TestPubSubPool_SelectLeastLoaded_SkipsInactive(t *testing.T) {
 	pubsubs := pool.hashslotPubSubs[100]
 
 	var selectedPubSub *redis.PubSub
-	minSubs := int(^uint(0) >> 1)
+	minSubs := math.MaxInt
 
 	for _, ps := range pubsubs {
 		meta := pool.pubSubMetadata[ps]
@@ -556,7 +557,7 @@ func TestPubSubPool_SelectLeastLoaded_AllInactive(t *testing.T) {
 	pubsubs := pool.hashslotPubSubs[100]
 
 	var selectedPubSub *redis.PubSub
-	minSubs := int(^uint(0) >> 1)
+	minSubs := math.MaxInt
 
 	for _, ps := range pubsubs {
 		meta := pool.pubSubMetadata[ps]
@@ -597,7 +598,7 @@ func TestPubSubPool_SelectLeastLoaded_NilMetadata(t *testing.T) {
 	pubsubs := pool.hashslotPubSubs[100]
 
 	var selectedPubSub *redis.PubSub
-	minSubs := int(^uint(0) >> 1)
+	minSubs := math.MaxInt
 
 	for _, ps := range pubsubs {
 		meta := pool.pubSubMetadata[ps]
@@ -643,7 +644,7 @@ func TestPubSubPool_SelectLeastLoaded_EqualLoad(t *testing.T) {
 	pubsubs := pool.hashslotPubSubs[100]
 
 	var selectedPubSub *redis.PubSub
-	minSubs := int(^uint(0) >> 1)
+	minSubs := math.MaxInt
 
 	for _, ps := range pubsubs {
 		meta := pool.pubSubMetadata[ps]

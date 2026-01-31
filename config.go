@@ -49,7 +49,7 @@ func defaultConfig() *config {
 		migrationTimeout:      30 * time.Second, // Default: 30s max for migration resubscription
 		migrationStallCheck:   2 * time.Second,  // Default: check for stalls every 2s
 		logger:                slog.Default(),
-		meterProvider:         nil,         // Default: metrics disabled
+		meterProvider:         nil,            // Default: metrics disabled
 		recorder:              &noopMetrics{}, // Default: no-op recorder
 	}
 }
@@ -155,7 +155,6 @@ func WithMigrationStallCheck(interval time.Duration) Option {
 //	exporter, _ := prometheus.New()
 //	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exporter))
 //	subMux, _ := submux.New(clusterClient, submux.WithMeterProvider(provider))
-//
 func WithMeterProvider(provider metric.MeterProvider) Option {
 	return func(c *config) {
 		c.meterProvider = provider

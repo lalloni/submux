@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
+	"slices"
 	"sync"
 
 	"github.com/redis/go-redis/v9"
@@ -82,7 +84,7 @@ func (m *pubSubMetadata) removeSubscription(sub *subscription) {
 	subs := m.subscriptions[sub.channel]
 	for i, s := range subs {
 		if s == sub {
-			m.subscriptions[sub.channel] = append(subs[:i], subs[i+1:]...)
+			m.subscriptions[sub.channel] = slices.Delete(subs, i, i+1)
 			break
 		}
 	}
@@ -249,7 +251,7 @@ func (p *pubSubPool) getPubSubForHashslot(ctx context.Context, hashslot int) (*r
 	if len(pubsubs) > 0 {
 		// Find least-loaded PubSub
 		var bestPubSub *redis.PubSub
-		minSubs := int(^uint(0) >> 1) // max int
+		minSubs := math.MaxInt
 
 		for _, pubsub := range pubsubs {
 			meta := p.pubSubMetadata[pubsub]
@@ -298,7 +300,7 @@ func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int) 
 	if pubsubs, ok := p.nodePubSubs[nodeAddr]; ok && len(pubsubs) > 0 {
 		// Find least-loaded PubSub
 		var bestPubSub *redis.PubSub
-		minSubs := int(^uint(0) >> 1) // max int
+		minSubs := math.MaxInt
 
 		for _, pubsub := range pubsubs {
 			meta := p.pubSubMetadata[pubsub]
@@ -346,7 +348,7 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 
 	var bestPubSub *redis.PubSub
 	var bestNodeAddr string
-	minSubs := int(^uint(0) >> 1) // max int
+	minSubs := math.MaxInt
 	nodeConnCounts := make(map[string]int)
 
 	// Find least-loaded connection across ALL nodes
@@ -380,7 +382,7 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 	}
 
 	// No existing connections - pick the node with fewest connections
-	minConns := int(^uint(0) >> 1)
+	minConns := math.MaxInt
 	for _, nodeAddr := range nodes {
 		if nodeConnCounts[nodeAddr] < minConns {
 			minConns = nodeConnCounts[nodeAddr]
@@ -548,7 +550,7 @@ func (p *pubSubPool) removePubSub(pubsub *redis.PubSub) {
 	if pubsubs, ok := p.nodePubSubs[meta.nodeAddr]; ok {
 		for i, ps := range pubsubs {
 			if ps == pubsub {
-				p.nodePubSubs[meta.nodeAddr] = append(pubsubs[:i], pubsubs[i+1:]...)
+				p.nodePubSubs[meta.nodeAddr] = slices.Delete(pubsubs, i, i+1)
 				break
 			}
 		}
@@ -561,7 +563,7 @@ func (p *pubSubPool) removePubSub(pubsub *redis.PubSub) {
 	for hashslot, pubsubs := range p.hashslotPubSubs {
 		for i, ps := range pubsubs {
 			if ps == pubsub {
-				p.hashslotPubSubs[hashslot] = append(pubsubs[:i], pubsubs[i+1:]...)
+				p.hashslotPubSubs[hashslot] = slices.Delete(pubsubs, i, i+1)
 				break
 			}
 		}

@@ -28,8 +28,8 @@ func TestNoopMetrics_NoOp(t *testing.T) {
 	recorder.recordTopologyRefresh(true)
 	recorder.recordCallbackLatency("subscribe", 10*time.Millisecond)
 	recorder.recordMessageLatency("subscribe", 5*time.Millisecond)
-	recorder.recordMigrationDuration(100*time.Millisecond)
-	recorder.recordTopologyRefreshLatency(50*time.Millisecond)
+	recorder.recordMigrationDuration(100 * time.Millisecond)
+	recorder.recordTopologyRefreshLatency(50 * time.Millisecond)
 }
 
 // TestNewMetricsRecorder_NilProvider verifies nil provider creates no-op recorder
@@ -130,8 +130,8 @@ func TestOtelMetrics_HistogramRecording(t *testing.T) {
 	recorder.recordCallbackLatency("subscribe", 10*time.Millisecond)
 	recorder.recordCallbackLatency("subscribe", 25*time.Millisecond)
 	recorder.recordMessageLatency("psubscribe", 5*time.Millisecond)
-	recorder.recordMigrationDuration(500*time.Millisecond)
-	recorder.recordTopologyRefreshLatency(100*time.Millisecond)
+	recorder.recordMigrationDuration(500 * time.Millisecond)
+	recorder.recordTopologyRefreshLatency(100 * time.Millisecond)
 
 	// Collect metrics
 	rm := &metricdata.ResourceMetrics{}

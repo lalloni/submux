@@ -2,6 +2,15 @@
 
 All notable changes to the submux project will be documented in this file.
 
+## [2.2.1] - 2026-01-30
+
+### Changed
+- **Code Modernization**: Updated codebase to use Go 1.25.6 standard library improvements
+  - Replaced `int(^uint(0) >> 1)` with `math.MaxInt` (9 instances)
+  - Replaced manual slice deletion with `slices.Delete()` (7 instances)
+  - Replaced legacy `sync/atomic` functions with typed `atomic.Int64` (15+ instances)
+  - No behavioral changes; purely syntactic improvements for better readability and safety
+
 ## [2.2.0] - 2026-01-26
 
 ### Added
