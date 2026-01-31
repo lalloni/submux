@@ -10,7 +10,7 @@ func TestSubscription_Creation(t *testing.T) {
 	sub := &subscription{
 		channel:   "testchannel",
 		subType:   subTypeSubscribe,
-		callback:  func(msg *Message) {},
+		callback:  func(ctx context.Context, msg *Message) {},
 		state:     subStatePending,
 		confirmCh: make(chan error, 1),
 		hashslot:  1234,

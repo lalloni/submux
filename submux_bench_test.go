@@ -35,7 +35,7 @@ func BenchmarkSubscribe(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		sub, err := subMux.SubscribeSync(context.Background(), channels, func(msg *Message) {
+		sub, err := subMux.SubscribeSync(context.Background(), channels, func(ctx context.Context, msg *Message) {
 			// Minimal callback
 		})
 		if err != nil {
@@ -69,7 +69,7 @@ func BenchmarkSubscribe_MultipleChannels(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		sub, err := subMux.SubscribeSync(context.Background(), channels, func(msg *Message) {
+		sub, err := subMux.SubscribeSync(context.Background(), channels, func(ctx context.Context, msg *Message) {
 			// Minimal callback
 		})
 		if err != nil {
@@ -82,7 +82,7 @@ func BenchmarkSubscribe_MultipleChannels(b *testing.B) {
 // BenchmarkCallbackInvocation benchmarks callback invocation overhead.
 // This test uses a mock to avoid requiring a real Redis cluster.
 func BenchmarkCallbackInvocation(b *testing.B) {
-	callback := func(msg *Message) {
+	callback := func(ctx context.Context, msg *Message) {
 		// Simulate minimal callback work
 		_ = len(msg.Payload)
 	}
@@ -94,10 +94,11 @@ func BenchmarkCallbackInvocation(b *testing.B) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx := context.Background()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		invokeCallback(logger, &noopMetrics{}, callback, msg)
+		invokeCallback(logger, &noopMetrics{}, nil, ctx, callback, msg)
 	}
 }
 
@@ -105,7 +106,7 @@ func BenchmarkCallbackInvocation(b *testing.B) {
 func BenchmarkCallbackInvocation_MultipleCallbacks(b *testing.B) {
 	callbacks := make([]MessageCallback, 10)
 	for i := range callbacks {
-		callbacks[i] = func(msg *Message) {
+		callbacks[i] = func(ctx context.Context, msg *Message) {
 			_ = len(msg.Payload)
 		}
 	}
@@ -117,11 +118,12 @@ func BenchmarkCallbackInvocation_MultipleCallbacks(b *testing.B) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx := context.Background()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for _, cb := range callbacks {
-			invokeCallback(logger, &noopMetrics{}, cb, msg)
+			invokeCallback(logger, &noopMetrics{}, nil, ctx, cb, msg)
 		}
 	}
 }

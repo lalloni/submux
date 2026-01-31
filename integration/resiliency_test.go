@@ -90,7 +90,7 @@ func TestReplicaFailure_Recovery(t *testing.T) {
 	channelName := "replica-fail-test"
 	messages := make(chan *submux.Message, 10)
 
-	_, err = subMux.SubscribeSync(context.Background(), []string{channelName}, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{channelName}, func(ctx context.Context, msg *submux.Message) {
 		if msg.Type == submux.MessageTypeMessage {
 			messages <- msg
 		}
@@ -239,7 +239,7 @@ func TestRollingRestart_Stability(t *testing.T) {
 	channelName := "stability-test"
 	messages := make(chan *submux.Message, 100)
 
-	_, err = subMux.SubscribeSync(context.Background(), []string{channelName}, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{channelName}, func(ctx context.Context, msg *submux.Message) {
 		if msg.Type == submux.MessageTypeMessage {
 			messages <- msg
 		}

@@ -20,23 +20,30 @@ func TestConcurrentSubscriptions(t *testing.T) {
 	}
 	defer subMux.Close()
 
+	// Create a timeout context for the entire test
+	testCtx, testCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer testCancel()
+
 	// Create multiple goroutines subscribing to different channels concurrently
 	numGoroutines := 10
 	channelsPerGoroutine := 5
 	var wg sync.WaitGroup
 	errors := make(chan error, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
 
 			channels := make([]string, channelsPerGoroutine)
-			for j := 0; j < channelsPerGoroutine; j++ {
+			for j := range channelsPerGoroutine {
 				channels[j] = fmt.Sprintf("concurrent-%d-%d", id, j)
 			}
 
-			_, subErr := subMux.SubscribeSync(context.Background(), channels, func(msg *submux.Message) {
+			subCtx, subCancel := context.WithTimeout(testCtx, 10*time.Second)
+			defer subCancel()
+
+			_, subErr := subMux.SubscribeSync(subCtx, channels, func(ctx context.Context, msg *submux.Message) {
 				// Message received
 			})
 			if subErr != nil {
@@ -64,12 +71,16 @@ func TestConcurrentMessageHandling(t *testing.T) {
 	}
 	defer subMux.Close()
 
+	// Create a timeout context for subscription
+	subCtx, subCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer subCancel()
+
 	// Subscribe to a channel
 	messageCount := 0
 	var mu sync.Mutex
 	messages := make(chan *submux.Message, 1000)
 
-	_, err = subMux.SubscribeSync(context.Background(), []string{"concurrent-msg"}, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(subCtx, []string{"concurrent-msg"}, func(ctx context.Context, msg *submux.Message) {
 		if msg.Type == submux.MessageTypeMessage {
 			mu.Lock()
 			messageCount++
@@ -87,11 +98,11 @@ func TestConcurrentMessageHandling(t *testing.T) {
 	var wg sync.WaitGroup
 	pubClient := cluster.GetClusterClient()
 
-	for i := 0; i < numPublishers; i++ {
+	for i := range numPublishers {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < messagesPerPublisher; j++ {
+			for j := range messagesPerPublisher {
 				err := pubClient.Publish(context.Background(), "concurrent-msg", fmt.Sprintf("msg-%d-%d", id, j)).Err()
 				if err != nil {
 					t.Errorf("Failed to publish message %d-%d: %v", id, j, err)
@@ -152,14 +163,21 @@ func TestConcurrentSubscribeUnsubscribe(t *testing.T) {
 	var wg sync.WaitGroup
 	errors := make(chan error, 20)
 
+	// Create a timeout context for the entire test
+	testCtx, testCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer testCancel()
+
 	// Concurrent subscribe and unsubscribe operations
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
 
-			// Subscribe
-			sub, err := subMux.SubscribeSync(context.Background(), channels, func(msg *submux.Message) {})
+			// Subscribe with timeout context
+			subCtx, subCancel := context.WithTimeout(testCtx, 10*time.Second)
+			defer subCancel()
+
+			sub, err := subMux.SubscribeSync(subCtx, channels, func(ctx context.Context, msg *submux.Message) {})
 			if err != nil {
 				errors <- fmt.Errorf("subscribe failed (goroutine %d): %w", id, err)
 				return
@@ -167,8 +185,11 @@ func TestConcurrentSubscribeUnsubscribe(t *testing.T) {
 
 			// SubscribeSync already waits for confirmation, so no delay needed
 
-			// Unsubscribe
-			err = sub.Unsubscribe(context.Background())
+			// Unsubscribe with timeout context
+			unsubCtx, unsubCancel := context.WithTimeout(testCtx, 10*time.Second)
+			defer unsubCancel()
+
+			err = sub.Unsubscribe(unsubCtx)
 			if err != nil {
 				errors <- fmt.Errorf("unsubscribe failed (goroutine %d): %w", id, err)
 			}
@@ -194,6 +215,10 @@ func TestConcurrentMultipleSubscriptionsSameChannel(t *testing.T) {
 	}
 	defer subMux.Close()
 
+	// Create a timeout context for the entire test
+	testCtx, testCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer testCancel()
+
 	// Multiple goroutines subscribing to the same channel concurrently
 	// Using 3 goroutines to test concurrency while keeping the test fast
 	channel := uniqueChannel("shared")
@@ -203,12 +228,15 @@ func TestConcurrentMultipleSubscriptionsSameChannel(t *testing.T) {
 	callbackCh := make(chan struct{}, numGoroutines)
 
 	var wg sync.WaitGroup
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
 
-			_, subErr := subMux.SubscribeSync(context.Background(), []string{channel}, func(msg *submux.Message) {
+			subCtx, subCancel := context.WithTimeout(testCtx, 10*time.Second)
+			defer subCancel()
+
+			_, subErr := subMux.SubscribeSync(subCtx, []string{channel}, func(ctx context.Context, msg *submux.Message) {
 				if msg.Type == submux.MessageTypeMessage {
 					mu.Lock()
 					callbackCount++
@@ -273,12 +301,16 @@ func TestConcurrentTopologyChanges(t *testing.T) {
 	}
 	defer subMux.Close()
 
+	// Create a timeout context for subscription
+	subCtx, subCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer subCancel()
+
 	// Subscribe to multiple channels
 	channels := []string{"topo-1", "topo-2", "topo-3"}
 	messages := make(chan *submux.Message, 100)
 	signalMessages := make(chan *submux.Message, 100)
 
-	_, err = subMux.SubscribeSync(context.Background(), channels, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(subCtx, channels, func(ctx context.Context, msg *submux.Message) {
 		if msg.Type == submux.MessageTypeSignal {
 			signalMessages <- msg
 		} else {
@@ -294,11 +326,11 @@ func TestConcurrentTopologyChanges(t *testing.T) {
 	pubClient := cluster.GetClusterClient()
 
 	// Publisher goroutines
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < 10; j++ {
+			for j := range 10 {
 				for _, ch := range channels {
 					err := pubClient.Publish(context.Background(), ch, fmt.Sprintf("msg-%d-%d", id, j)).Err()
 					if err != nil {
@@ -310,11 +342,11 @@ func TestConcurrentTopologyChanges(t *testing.T) {
 	}
 
 	// Topology refresh goroutines
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 5; j++ {
+			for range 5 {
 				_ = client.ClusterSlots(context.Background()).Err()
 			}
 		}()

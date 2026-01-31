@@ -187,7 +187,7 @@ func TestSubMux_SubscribeSync_InvalidChannel(t *testing.T) {
 	defer subMux.Close()
 
 	// Test with empty channel list
-	_, err = subMux.SubscribeSync(context.Background(), []string{}, func(msg *Message) {})
+	_, err = subMux.SubscribeSync(context.Background(), []string{}, func(ctx context.Context, msg *Message) {})
 	if err == nil {
 		t.Error("SubscribeSync with empty channels should return error")
 	}
@@ -196,7 +196,7 @@ func TestSubMux_SubscribeSync_InvalidChannel(t *testing.T) {
 	}
 
 	// Test with empty channel name
-	_, err = subMux.SubscribeSync(context.Background(), []string{""}, func(msg *Message) {})
+	_, err = subMux.SubscribeSync(context.Background(), []string{""}, func(ctx context.Context, msg *Message) {})
 	if err == nil {
 		t.Error("SubscribeSync with empty channel name should return error")
 	}
@@ -226,7 +226,7 @@ func TestSubMux_SubscribeSync_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	_, err = subMux.SubscribeSync(ctx, []string{"test"}, func(msg *Message) {})
+	_, err = subMux.SubscribeSync(ctx, []string{"test"}, func(ctx context.Context, msg *Message) {})
 	// Error will be either context.Canceled or a connection error (if Redis not available)
 	// Both are acceptable for this unit test
 	if err == nil {
@@ -263,7 +263,7 @@ func TestSubMux_SubscribeSync_ContextTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	_, err = subMux.SubscribeSync(ctx, []string{"test"}, func(msg *Message) {})
+	_, err = subMux.SubscribeSync(ctx, []string{"test"}, func(ctx context.Context, msg *Message) {})
 	// Error will be either context.DeadlineExceeded or a connection error (if Redis not available)
 	// Both are acceptable for this unit test
 	if err == nil {

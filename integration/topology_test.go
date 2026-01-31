@@ -34,7 +34,7 @@ func TestHashslotMigration(t *testing.T) {
 	signalMessages := make(chan *submux.Message, 10)
 
 	channelName := uniqueChannel("migrate-test")
-	_, err = subMux.SSubscribeSync(context.Background(), []string{channelName}, func(msg *submux.Message) {
+	_, err = subMux.SSubscribeSync(context.Background(), []string{channelName}, func(ctx context.Context, msg *submux.Message) {
 		if msg.Type == submux.MessageTypeSignal {
 			signalMessages <- msg
 		} else {
@@ -129,7 +129,7 @@ func TestAutoResubscribe(t *testing.T) {
 	channelName := uniqueChannel("auto-resub-test")
 	messages := make(chan *submux.Message, 10)
 
-	_, err = subMux.SSubscribeSync(context.Background(), []string{channelName}, func(msg *submux.Message) {
+	_, err = subMux.SSubscribeSync(context.Background(), []string{channelName}, func(ctx context.Context, msg *submux.Message) {
 		if msg.Type == submux.MessageTypeMessage || msg.Type == submux.MessageTypeSMessage {
 			messages <- msg
 		}
@@ -239,7 +239,7 @@ func TestManualResubscribe(t *testing.T) {
 	signals := make(chan *submux.Message, 10)
 
 	// Define callback to reuse
-	callback := func(msg *submux.Message) {
+	callback := func(ctx context.Context, msg *submux.Message) {
 		switch msg.Type {
 		case submux.MessageTypeMessage, submux.MessageTypeSMessage:
 			messages <- msg
@@ -377,7 +377,7 @@ func TestNodeFailure_SubscriptionContinuation(t *testing.T) {
 	channelName := "failover-test"
 	messages := make(chan *submux.Message, 10)
 
-	_, err = subMux.SubscribeSync(context.Background(), []string{channelName}, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{channelName}, func(ctx context.Context, msg *submux.Message) {
 		if msg.Type == submux.MessageTypeMessage {
 			messages <- msg
 		}
@@ -544,7 +544,7 @@ func TestMultipleChannelsAcrossShards(t *testing.T) {
 	received := make(map[string]bool)
 	var mu sync.Mutex
 
-	_, err = subMux.SubscribeSync(context.Background(), channels, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), channels, func(ctx context.Context, msg *submux.Message) {
 		if msg.Type == submux.MessageTypeMessage {
 			mu.Lock()
 			received[msg.Channel] = true
@@ -622,7 +622,7 @@ func TestSubscriptionAfterTopologyChange(t *testing.T) {
 
 	// Subscribe to a channel
 	messages := make(chan *submux.Message, 10)
-	_, err = subMux.SubscribeSync(context.Background(), []string{"topology-test"}, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{"topology-test"}, func(ctx context.Context, msg *submux.Message) {
 		messages <- msg
 	})
 	if err != nil {
@@ -656,7 +656,7 @@ func TestSubscriptionAfterTopologyChange(t *testing.T) {
 	}
 
 	// Subscribe to another channel after topology refresh
-	_, err = subMux.SubscribeSync(context.Background(), []string{"topology-test-2"}, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{"topology-test-2"}, func(ctx context.Context, msg *submux.Message) {
 		messages <- msg
 	})
 	if err != nil {
@@ -727,7 +727,7 @@ func TestMovedErrorDetection(t *testing.T) {
 	signals := make(chan *submux.Message, 10)
 	messages := make(chan *submux.Message, 10)
 
-	callback := func(msg *submux.Message) {
+	callback := func(ctx context.Context, msg *submux.Message) {
 		switch msg.Type {
 		case submux.MessageTypeSignal:
 			signals <- msg
@@ -865,7 +865,7 @@ func TestAskErrorHandling(t *testing.T) {
 	channelName := uniqueChannel("ask-test")
 	messages := make(chan *submux.Message, 10)
 
-	_, err = subMux.SSubscribeSync(context.Background(), []string{channelName}, func(msg *submux.Message) {
+	_, err = subMux.SSubscribeSync(context.Background(), []string{channelName}, func(ctx context.Context, msg *submux.Message) {
 		messages <- msg
 	})
 	if err != nil {
@@ -916,7 +916,7 @@ func TestTopologyRefreshOnSubscriptionAfterMigration(t *testing.T) {
 	messages := make(chan *submux.Message, 20)
 	signals := make(chan *submux.Message, 20)
 
-	callback := func(msg *submux.Message) {
+	callback := func(ctx context.Context, msg *submux.Message) {
 		switch msg.Type {
 		case submux.MessageTypeSignal:
 			signals <- msg

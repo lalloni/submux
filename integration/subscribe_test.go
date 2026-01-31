@@ -20,7 +20,7 @@ func TestPSubscribePattern(t *testing.T) {
 	defer subMux.Close()
 
 	messages := make(chan *submux.Message, 10)
-	_, err = subMux.PSubscribeSync(context.Background(), []string{"test:*"}, func(msg *submux.Message) {
+	_, err = subMux.PSubscribeSync(context.Background(), []string{"test:*"}, func(ctx context.Context, msg *submux.Message) {
 		messages <- msg
 	})
 	if err != nil {
@@ -81,7 +81,7 @@ func TestSSubscribeSharded(t *testing.T) {
 
 	channel := uniqueChannel("test-sharded")
 	messages := make(chan *submux.Message, 10)
-	_, err = subMux.SSubscribeSync(context.Background(), []string{channel}, func(msg *submux.Message) {
+	_, err = subMux.SSubscribeSync(context.Background(), []string{channel}, func(ctx context.Context, msg *submux.Message) {
 		messages <- msg
 	})
 	if err != nil {
@@ -162,7 +162,7 @@ func TestMultipleSubscriptionsSameChannel(t *testing.T) {
 	callback2Count := 0
 	var mu sync.Mutex
 
-	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(ctx context.Context, msg *submux.Message) {
 		mu.Lock()
 		callback1Count++
 		mu.Unlock()
@@ -171,7 +171,7 @@ func TestMultipleSubscriptionsSameChannel(t *testing.T) {
 		t.Fatalf("Failed to subscribe (callback 1): %v", err)
 	}
 
-	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(ctx context.Context, msg *submux.Message) {
 		mu.Lock()
 		callback2Count++
 		mu.Unlock()
@@ -239,7 +239,7 @@ func TestUnsubscribe(t *testing.T) {
 
 	channel := uniqueChannel("test-unsub")
 	messages := make(chan *submux.Message, 10)
-	sub, err := subMux.SubscribeSync(context.Background(), []string{channel}, func(msg *submux.Message) {
+	sub, err := subMux.SubscribeSync(context.Background(), []string{channel}, func(ctx context.Context, msg *submux.Message) {
 		messages <- msg
 	})
 	if err != nil {
@@ -302,7 +302,7 @@ func TestUnsubscribeMultipleChannels(t *testing.T) {
 	var mu sync.Mutex
 
 	channels := []string{"ch1", "ch2", "ch3"}
-	sub, err := subMux.SubscribeSync(context.Background(), channels, func(msg *submux.Message) {
+	sub, err := subMux.SubscribeSync(context.Background(), channels, func(ctx context.Context, msg *submux.Message) {
 		mu.Lock()
 		received[msg.Channel] = true
 		mu.Unlock()
@@ -403,7 +403,7 @@ func TestUnsubscribePartial(t *testing.T) {
 	var mu sync.Mutex
 
 	// Subscribe with two callbacks
-	sub1, err := subMux.SubscribeSync(context.Background(), []string{"test"}, func(msg *submux.Message) {
+	sub1, err := subMux.SubscribeSync(context.Background(), []string{"test"}, func(ctx context.Context, msg *submux.Message) {
 		mu.Lock()
 		callback1Count++
 		mu.Unlock()
@@ -412,7 +412,7 @@ func TestUnsubscribePartial(t *testing.T) {
 		t.Fatalf("Failed to subscribe (callback 1): %v", err)
 	}
 
-	_, err = subMux.SubscribeSync(context.Background(), []string{"test"}, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{"test"}, func(ctx context.Context, msg *submux.Message) {
 		mu.Lock()
 		callback2Count++
 		mu.Unlock()

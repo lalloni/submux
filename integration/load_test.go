@@ -38,7 +38,7 @@ func TestHighSubscriptionCount(t *testing.T) {
 	start := time.Now()
 	var messageCount atomic.Int64
 
-	_, err = subMux.SubscribeSync(context.Background(), channels, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), channels, func(ctx context.Context, msg *submux.Message) {
 		if msg.Type == submux.MessageTypeMessage {
 			messageCount.Add(1)
 		}
@@ -109,7 +109,7 @@ func TestHighSubscriptionCount_MemoryUsage(t *testing.T) {
 		channels[i] = uniqueChannel(fmt.Sprintf("mem-%d", i))
 	}
 
-	_, err = subMux.SubscribeSync(context.Background(), channels, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), channels, func(ctx context.Context, msg *submux.Message) {
 		// Minimal callback
 	})
 	if err != nil {
@@ -152,7 +152,7 @@ func TestHighMessageThroughput(t *testing.T) {
 	var mu sync.Mutex
 	receivedMessages := make(map[string]bool)
 
-	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(ctx context.Context, msg *submux.Message) {
 		if msg.Type == submux.MessageTypeMessage {
 			receivedCount.Add(1)
 			mu.Lock()
@@ -253,7 +253,7 @@ func TestHighMessageThroughput_CallbackPerformance(t *testing.T) {
 	callbackTimes := make([]time.Duration, 0, numMessages)
 	var mu sync.Mutex
 
-	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(ctx context.Context, msg *submux.Message) {
 		if msg.Type == submux.MessageTypeMessage {
 			start := time.Now()
 			// Simulate minimal callback work
@@ -358,7 +358,7 @@ func TestLongRunningSubscriptions(t *testing.T) {
 	var messageCount atomic.Int64
 	var errorCount atomic.Int64
 
-	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(ctx context.Context, msg *submux.Message) {
 		switch msg.Type {
 		case submux.MessageTypeMessage:
 			messageCount.Add(1)

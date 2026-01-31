@@ -26,7 +26,7 @@ func TestSubscribeBasic(t *testing.T) {
 
 	channel := uniqueChannel("test")
 	messages := make(chan *submux.Message, 10)
-	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(ctx context.Context, msg *submux.Message) {
 		messages <- msg
 	})
 	if err != nil {
@@ -69,7 +69,7 @@ func TestSubscribeMultipleChannels(t *testing.T) {
 	received := make(map[string]bool)
 	var mu sync.Mutex
 
-	_, err = subMux.SubscribeSync(context.Background(), []string{"channel1", "channel2", "channel3"}, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{"channel1", "channel2", "channel3"}, func(ctx context.Context, msg *submux.Message) {
 		if msg.Type == submux.MessageTypeMessage {
 			mu.Lock()
 			received[msg.Channel] = true
@@ -138,7 +138,7 @@ func TestSubscribeMessageDelivery(t *testing.T) {
 	defer subMux.Close()
 
 	messages := make(chan *submux.Message, 100)
-	_, err = subMux.SubscribeSync(context.Background(), []string{"test"}, func(msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{"test"}, func(ctx context.Context, msg *submux.Message) {
 		messages <- msg
 	})
 	if err != nil {
@@ -185,13 +185,13 @@ func TestSubscribeErrorHandling(t *testing.T) {
 	defer subMux.Close()
 
 	// Test with empty channel list
-	_, err = subMux.SubscribeSync(context.Background(), []string{}, func(msg *submux.Message) {})
+	_, err = subMux.SubscribeSync(context.Background(), []string{}, func(ctx context.Context, msg *submux.Message) {})
 	if err == nil {
 		t.Error("Expected error for empty channel list")
 	}
 
 	// Test with empty channel name
-	_, err = subMux.SubscribeSync(context.Background(), []string{""}, func(msg *submux.Message) {})
+	_, err = subMux.SubscribeSync(context.Background(), []string{""}, func(ctx context.Context, msg *submux.Message) {})
 	if err == nil {
 		t.Error("Expected error for empty channel name")
 	}
