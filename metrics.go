@@ -22,12 +22,18 @@ type metricsRecorder interface {
 	recordMigrationStalled()
 	recordMigrationTimeout()
 	recordTopologyRefresh(success bool)
+	recordWorkerPoolSubmission(blocked bool)
+	recordWorkerPoolDropped()
 
 	// Histogram metrics
 	recordCallbackLatency(subType string, duration time.Duration)
 	recordMessageLatency(subType string, duration time.Duration)
 	recordMigrationDuration(duration time.Duration)
 	recordTopologyRefreshLatency(duration time.Duration)
+	recordWorkerPoolQueueWait(duration time.Duration)
+
+	// Gauge registration (for observable metrics)
+	registerWorkerPoolGauges(pool *WorkerPool)
 }
 
 // newMetricsRecorder creates a metrics recorder based on the provided MeterProvider.
@@ -56,7 +62,11 @@ func (n *noopMetrics) recordMigrationCompleted()                   {}
 func (n *noopMetrics) recordMigrationStalled()                     {}
 func (n *noopMetrics) recordMigrationTimeout()                     {}
 func (n *noopMetrics) recordTopologyRefresh(bool)                  {}
+func (n *noopMetrics) recordWorkerPoolSubmission(bool)             {}
+func (n *noopMetrics) recordWorkerPoolDropped()                    {}
 func (n *noopMetrics) recordCallbackLatency(string, time.Duration) {}
 func (n *noopMetrics) recordMessageLatency(string, time.Duration)  {}
 func (n *noopMetrics) recordMigrationDuration(time.Duration)       {}
 func (n *noopMetrics) recordTopologyRefreshLatency(time.Duration)  {}
+func (n *noopMetrics) recordWorkerPoolQueueWait(time.Duration)     {}
+func (n *noopMetrics) registerWorkerPoolGauges(*WorkerPool)        {}

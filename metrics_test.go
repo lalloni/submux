@@ -30,6 +30,15 @@ func TestNoopMetrics_NoOp(t *testing.T) {
 	recorder.recordMessageLatency("subscribe", 5*time.Millisecond)
 	recorder.recordMigrationDuration(100 * time.Millisecond)
 	recorder.recordTopologyRefreshLatency(50 * time.Millisecond)
+	recorder.recordWorkerPoolSubmission(false)
+	recorder.recordWorkerPoolSubmission(true)
+	recorder.recordWorkerPoolDropped()
+	recorder.recordWorkerPoolQueueWait(5 * time.Millisecond)
+	recorder.registerWorkerPoolGauges(nil)
+
+	// Also test with a real pool
+	pool := NewWorkerPool(2, 10)
+	recorder.registerWorkerPoolGauges(pool)
 }
 
 // TestNewMetricsRecorder_NilProvider verifies nil provider creates no-op recorder
@@ -201,6 +210,148 @@ func TestOtelMetrics_Attributes(t *testing.T) {
 	if !foundAttributes {
 		t.Error("no attributes found in metrics")
 	}
+}
+
+// TestOtelMetrics_WorkerPoolGauges tests that worker pool gauges work correctly
+func TestOtelMetrics_WorkerPoolGauges(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	recorder := newMetricsRecorder(provider, slog.Default())
+
+	// Create and start a worker pool
+	pool := NewWorkerPool(2, 100)
+	pool.Start()
+	defer pool.Stop()
+
+	// Register the gauges
+	recorder.registerWorkerPoolGauges(pool)
+
+	// Add some tasks to the queue to have a non-zero depth
+	done := make(chan struct{})
+	for i := 0; i < 5; i++ {
+		pool.Submit(func() {
+			<-done // Block until we're done collecting
+		})
+	}
+
+	// Collect metrics
+	rm := &metricdata.ResourceMetrics{}
+	err := reader.Collect(context.Background(), rm)
+	if err != nil {
+		close(done)
+		t.Fatalf("failed to collect metrics: %v", err)
+	}
+
+	close(done) // Release blocked workers
+
+	// Verify we have metrics
+	if len(rm.ScopeMetrics) == 0 {
+		t.Fatal("no scope metrics collected")
+	}
+
+	// Find the gauge metrics
+	foundQueueDepth := false
+	foundQueueCapacity := false
+	for _, m := range rm.ScopeMetrics[0].Metrics {
+		if m.Name == "submux.workerpool.queue_depth" {
+			foundQueueDepth = true
+			if gauge, ok := m.Data.(metricdata.Gauge[int64]); ok {
+				if len(gauge.DataPoints) > 0 {
+					// Queue depth should be >= 0 (some tasks may have been processed)
+					t.Logf("queue_depth = %d", gauge.DataPoints[0].Value)
+				}
+			}
+		}
+		if m.Name == "submux.workerpool.queue_capacity" {
+			foundQueueCapacity = true
+			if gauge, ok := m.Data.(metricdata.Gauge[int64]); ok {
+				if len(gauge.DataPoints) > 0 && gauge.DataPoints[0].Value != 100 {
+					t.Errorf("queue_capacity = %d, want 100", gauge.DataPoints[0].Value)
+				}
+			}
+		}
+	}
+
+	if !foundQueueDepth {
+		t.Error("queue_depth gauge not found")
+	}
+	if !foundQueueCapacity {
+		t.Error("queue_capacity gauge not found")
+	}
+}
+
+// TestOtelMetrics_WorkerPoolDropped tests the dropped counter
+func TestOtelMetrics_WorkerPoolDropped(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	recorder := newMetricsRecorder(provider, slog.Default())
+
+	// Record some dropped callbacks
+	recorder.recordWorkerPoolDropped()
+	recorder.recordWorkerPoolDropped()
+	recorder.recordWorkerPoolDropped()
+
+	// Collect metrics
+	rm := &metricdata.ResourceMetrics{}
+	err := reader.Collect(context.Background(), rm)
+	if err != nil {
+		t.Fatalf("failed to collect metrics: %v", err)
+	}
+
+	// Find the dropped counter
+	for _, m := range rm.ScopeMetrics[0].Metrics {
+		if m.Name == "submux.workerpool.dropped" {
+			if sum, ok := m.Data.(metricdata.Sum[int64]); ok {
+				total := int64(0)
+				for _, dp := range sum.DataPoints {
+					total += dp.Value
+				}
+				if total != 3 {
+					t.Errorf("dropped = %d, want 3", total)
+				}
+				return
+			}
+		}
+	}
+
+	t.Error("dropped counter not found")
+}
+
+// TestOtelMetrics_WorkerPoolQueueWait tests queue wait histogram
+func TestOtelMetrics_WorkerPoolQueueWait(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	recorder := newMetricsRecorder(provider, slog.Default())
+
+	// Record some queue wait times
+	recorder.recordWorkerPoolQueueWait(1 * time.Millisecond)
+	recorder.recordWorkerPoolQueueWait(5 * time.Millisecond)
+	recorder.recordWorkerPoolQueueWait(10 * time.Millisecond)
+	recorder.recordWorkerPoolQueueWait(100 * time.Microsecond) // Sub-millisecond
+
+	// Collect metrics
+	rm := &metricdata.ResourceMetrics{}
+	err := reader.Collect(context.Background(), rm)
+	if err != nil {
+		t.Fatalf("failed to collect metrics: %v", err)
+	}
+
+	// Find the queue wait histogram
+	for _, m := range rm.ScopeMetrics[0].Metrics {
+		if m.Name == "submux.workerpool.queue_wait" {
+			if hist, ok := m.Data.(metricdata.Histogram[float64]); ok {
+				if len(hist.DataPoints) > 0 && hist.DataPoints[0].Count != 4 {
+					t.Errorf("queue_wait count = %d, want 4", hist.DataPoints[0].Count)
+				}
+				return
+			}
+		}
+	}
+
+	t.Error("queue_wait histogram not found")
 }
 
 // TestSubscriptionTypeToString verifies subscription type conversion

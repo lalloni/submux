@@ -14,25 +14,33 @@ import (
 // otelMetrics is the OpenTelemetry implementation of metricsRecorder.
 type otelMetrics struct {
 	logger *slog.Logger
+	meter  metric.Meter
 
 	// Counters
-	messagesReceived     metric.Int64Counter
-	callbacksInvoked     metric.Int64Counter
-	callbacksPanics      metric.Int64Counter
-	subscriptionAttempts metric.Int64Counter
-	connectionsCreated   metric.Int64Counter
-	connectionsFailed    metric.Int64Counter
-	migrationsStarted    metric.Int64Counter
-	migrationsCompleted  metric.Int64Counter
-	migrationsStalled    metric.Int64Counter
-	migrationsTimeout    metric.Int64Counter
-	topologyRefreshes    metric.Int64Counter
+	messagesReceived      metric.Int64Counter
+	callbacksInvoked      metric.Int64Counter
+	callbacksPanics       metric.Int64Counter
+	subscriptionAttempts  metric.Int64Counter
+	connectionsCreated    metric.Int64Counter
+	connectionsFailed     metric.Int64Counter
+	migrationsStarted     metric.Int64Counter
+	migrationsCompleted   metric.Int64Counter
+	migrationsStalled     metric.Int64Counter
+	migrationsTimeout     metric.Int64Counter
+	topologyRefreshes     metric.Int64Counter
+	workerPoolSubmissions metric.Int64Counter
+	workerPoolDropped     metric.Int64Counter
 
 	// Histograms
 	callbackLatency        metric.Float64Histogram
 	messageLatency         metric.Float64Histogram
 	migrationDuration      metric.Float64Histogram
 	topologyRefreshLatency metric.Float64Histogram
+	workerPoolQueueWait    metric.Float64Histogram
+
+	// Observable gauges (registered dynamically)
+	workerPoolQueueDepth metric.Int64ObservableGauge
+	workerPoolQueueCap   metric.Int64ObservableGauge
 }
 
 // newOtelMetrics creates a new OpenTelemetry metrics recorder.
@@ -42,7 +50,7 @@ func newOtelMetrics(provider metric.MeterProvider, logger *slog.Logger) *otelMet
 		metric.WithInstrumentationVersion("1.0.0"),
 	)
 
-	m := &otelMetrics{logger: logger}
+	m := &otelMetrics{logger: logger, meter: meter}
 
 	var err error
 
@@ -146,6 +154,24 @@ func newOtelMetrics(provider metric.MeterProvider, logger *slog.Logger) *otelMet
 		logger.Warn("submux: failed to create topologyRefreshes counter", "error", err)
 	}
 
+	m.workerPoolSubmissions, err = meter.Int64Counter(
+		"submux.workerpool.submissions",
+		metric.WithDescription("Total callback submissions to worker pool"),
+		metric.WithUnit("{submission}"),
+	)
+	if err != nil {
+		logger.Warn("submux: failed to create workerPoolSubmissions counter", "error", err)
+	}
+
+	m.workerPoolDropped, err = meter.Int64Counter(
+		"submux.workerpool.dropped",
+		metric.WithDescription("Total callbacks dropped because worker pool was stopped"),
+		metric.WithUnit("{callback}"),
+	)
+	if err != nil {
+		logger.Warn("submux: failed to create workerPoolDropped counter", "error", err)
+	}
+
 	// Create histogram instruments
 	m.callbackLatency, err = meter.Float64Histogram(
 		"submux.callbacks.latency",
@@ -185,6 +211,16 @@ func newOtelMetrics(provider metric.MeterProvider, logger *slog.Logger) *otelMet
 	)
 	if err != nil {
 		logger.Warn("submux: failed to create topologyRefreshLatency histogram", "error", err)
+	}
+
+	m.workerPoolQueueWait, err = meter.Float64Histogram(
+		"submux.workerpool.queue_wait",
+		metric.WithDescription("Time callbacks wait in the worker pool queue before execution"),
+		metric.WithUnit("ms"),
+		metric.WithExplicitBucketBoundaries(0.1, 0.5, 1, 5, 10, 25, 50, 100, 250, 500, 1000),
+	)
+	if err != nil {
+		logger.Warn("submux: failed to create workerPoolQueueWait histogram", "error", err)
 	}
 
 	return m
@@ -315,5 +351,66 @@ func (m *otelMetrics) recordTopologyRefreshLatency(duration time.Duration) {
 	if m.topologyRefreshLatency != nil {
 		ms := float64(duration.Milliseconds())
 		m.topologyRefreshLatency.Record(context.Background(), ms)
+	}
+}
+
+func (m *otelMetrics) recordWorkerPoolSubmission(blocked bool) {
+	if m.workerPoolSubmissions != nil {
+		m.workerPoolSubmissions.Add(context.Background(), 1,
+			metric.WithAttributes(
+				attribute.Bool("blocked", blocked),
+			))
+	}
+}
+
+func (m *otelMetrics) recordWorkerPoolQueueWait(duration time.Duration) {
+	if m.workerPoolQueueWait != nil {
+		// Use microseconds for better precision on short waits
+		us := float64(duration.Microseconds()) / 1000.0 // Convert to milliseconds
+		m.workerPoolQueueWait.Record(context.Background(), us)
+	}
+}
+
+func (m *otelMetrics) recordWorkerPoolDropped() {
+	if m.workerPoolDropped != nil {
+		m.workerPoolDropped.Add(context.Background(), 1)
+	}
+}
+
+// registerWorkerPoolGauges registers observable gauges for worker pool queue monitoring.
+// This should be called once after the worker pool is created.
+func (m *otelMetrics) registerWorkerPoolGauges(pool *WorkerPool) {
+	if pool == nil || m.meter == nil {
+		return
+	}
+
+	var err error
+
+	// Register queue depth gauge (current number of tasks waiting)
+	m.workerPoolQueueDepth, err = m.meter.Int64ObservableGauge(
+		"submux.workerpool.queue_depth",
+		metric.WithDescription("Current number of tasks waiting in the worker pool queue"),
+		metric.WithUnit("{task}"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(int64(pool.QueueLength()))
+			return nil
+		}),
+	)
+	if err != nil {
+		m.logger.Warn("submux: failed to create workerPoolQueueDepth gauge", "error", err)
+	}
+
+	// Register queue capacity gauge (maximum queue size)
+	m.workerPoolQueueCap, err = m.meter.Int64ObservableGauge(
+		"submux.workerpool.queue_capacity",
+		metric.WithDescription("Maximum capacity of the worker pool queue"),
+		metric.WithUnit("{task}"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(int64(pool.QueueCapacity()))
+			return nil
+		}),
+	)
+	if err != nil {
+		m.logger.Warn("submux: failed to create workerPoolQueueCap gauge", "error", err)
 	}
 }
