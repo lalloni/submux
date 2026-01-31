@@ -1,6 +1,6 @@
 module github.com/lalloni/submux
 
-go 1.25.1
+go 1.25.6
 
 require (
 	github.com/redis/go-redis/v9 v9.17.2
