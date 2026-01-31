@@ -88,6 +88,16 @@ type subscription struct {
 	// confirmCh is used to signal subscription confirmation (for sync operations).
 	confirmCh chan error
 
+	// doneCh is closed when confirmation completes (success or failure).
+	// This allows multiple goroutines to wait for confirmation via waitForActive.
+	doneCh chan struct{}
+
+	// doneChClosed tracks whether doneCh has been closed (to prevent double-close panic).
+	doneChClosed bool
+
+	// confirmErr stores the error from confirmation (if any).
+	confirmErr error
+
 	// hashslot is the calculated hashslot for this channel.
 	hashslot int
 }
@@ -96,12 +106,23 @@ type subscription struct {
 func (s *subscription) setState(newState subscriptionState, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	oldState := s.state
 	s.state = newState
+
+	// Signal confirmation channel for the primary waiter
 	if s.confirmCh != nil {
 		select {
 		case s.confirmCh <- err:
 		default:
 		}
+	}
+
+	// Close doneCh to broadcast to all waiters when leaving pending state
+	if oldState == subStatePending && newState != subStatePending && s.doneCh != nil && !s.doneChClosed {
+		s.confirmErr = err
+		s.doneChClosed = true
+		close(s.doneCh)
 	}
 }
 
@@ -113,6 +134,8 @@ func (s *subscription) getState() subscriptionState {
 }
 
 // waitForConfirmation waits for subscription confirmation with context support.
+// This method consumes the confirmation signal and should only be called by the
+// goroutine that sent the SUBSCRIBE command.
 func (s *subscription) waitForConfirmation(ctx context.Context) error {
 	s.mu.RLock()
 	confirmCh := s.confirmCh
@@ -124,6 +147,37 @@ func (s *subscription) waitForConfirmation(ctx context.Context) error {
 
 	select {
 	case err := <-confirmCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// waitForActive waits for the subscription to leave the pending state.
+// Unlike waitForConfirmation, this can be called by multiple goroutines
+// simultaneously since it uses a broadcast mechanism (closed channel).
+func (s *subscription) waitForActive(ctx context.Context) error {
+	s.mu.RLock()
+	doneCh := s.doneCh
+	state := s.state
+	confirmErr := s.confirmErr
+	s.mu.RUnlock()
+
+	// If already not pending, return immediately
+	if state != subStatePending {
+		return confirmErr
+	}
+
+	if doneCh == nil {
+		return nil
+	}
+
+	select {
+	case <-doneCh:
+		// doneCh was closed - get the stored error
+		s.mu.RLock()
+		err := s.confirmErr
+		s.mu.RUnlock()
 		return err
 	case <-ctx.Done():
 		return ctx.Err()

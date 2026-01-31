@@ -39,6 +39,13 @@ type pubSubMetadata struct {
 	// recorder is the metrics recorder for this connection.
 	recorder metricsRecorder
 
+	// workerPool is the worker pool for callback execution.
+	workerPool *WorkerPool
+
+	// lifecycleCtx is the context for the SubMux lifecycle.
+	// Canceled when SubMux.Close() is called.
+	lifecycleCtx context.Context
+
 	// nodeAddr is the address of the Redis node.
 	nodeAddr string
 
@@ -75,6 +82,40 @@ func (m *pubSubMetadata) addSubscription(sub *subscription) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.subscriptions[sub.channel] = append(m.subscriptions[sub.channel], sub)
+}
+
+// addSubscriptionAndCheckFirst atomically adds a subscription and determines if a SUBSCRIBE
+// command needs to be sent. This prevents race conditions where multiple goroutines
+// concurrently subscribe to the same channel.
+//
+// Returns:
+//   - needsSubscribe: true if this is the first subscription and SUBSCRIBE should be sent
+//   - existingPending: if not nil, another subscription is pending - wait for it instead
+//
+// If needsSubscribe is true, the subscription is also added to pendingSubscriptions.
+// If needsSubscribe is false and existingPending is nil, the channel is already active.
+func (m *pubSubMetadata) addSubscriptionAndCheckFirst(sub *subscription, channel string) (needsSubscribe bool, existingPending *subscription) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Add subscription to the list
+	m.subscriptions[channel] = append(m.subscriptions[channel], sub)
+
+	// Check if there's already a pending subscription for this channel
+	if pending, ok := m.pendingSubscriptions[channel]; ok {
+		// Another goroutine is subscribing - return their subscription to wait on
+		return false, pending
+	}
+
+	// Check if this is the first subscription (not counting ourselves since we just added)
+	if len(m.subscriptions[channel]) == 1 {
+		// We're first - add to pending and signal to send SUBSCRIBE
+		m.pendingSubscriptions[channel] = sub
+		return true, nil
+	}
+
+	// Channel already has active subscriptions - no need to subscribe
+	return false, nil
 }
 
 // removeSubscription removes a subscription from this PubSub.
@@ -120,7 +161,14 @@ func (m *pubSubMetadata) removePendingSubscription(channel string) {
 func (m *pubSubMetadata) getSubscriptions(channel string) []*subscription {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.subscriptions[channel]
+	// Return a copy to prevent race conditions when the slice is modified concurrently
+	subs := m.subscriptions[channel]
+	if len(subs) == 0 {
+		return nil
+	}
+	result := make([]*subscription, len(subs))
+	copy(result, subs)
+	return result
 }
 
 // getAllSubscriptions returns all subscriptions on this PubSub.
@@ -189,6 +237,13 @@ func (m *pubSubMetadata) sendCommand(ctx context.Context, cmd *command) error {
 	}
 }
 
+// pendingConnection represents a connection creation in progress.
+// Other goroutines can wait on the channel for the result.
+type pendingConnection struct {
+	result chan *redis.PubSub
+	err    chan error
+}
+
 // pubSubPool manages PubSub connections to Redis cluster nodes.
 type pubSubPool struct {
 	// clusterClient is the underlying Redis cluster client.
@@ -200,6 +255,9 @@ type pubSubPool struct {
 	// topologyMonitor provides robust topology information.
 	topologyMonitor *topologyMonitor
 
+	// subMux is a reference to the parent SubMux for accessing worker pool and lifecycle context.
+	subMux *SubMux
+
 	// nodePubSubs maps node address to list of PubSub connections.
 	nodePubSubs map[string][]*redis.PubSub
 
@@ -209,6 +267,10 @@ type pubSubPool struct {
 	// pubSubMetadata maps PubSub to its metadata.
 	pubSubMetadata map[*redis.PubSub]*pubSubMetadata
 
+	// pendingConnections tracks in-flight connection creation to prevent duplicates.
+	// Maps node address to a channel that will receive the created PubSub.
+	pendingConnections map[string]*pendingConnection
+
 	// mu protects all maps.
 	mu sync.RWMutex
 }
@@ -216,12 +278,20 @@ type pubSubPool struct {
 // newPubSubPool creates a new PubSub pool.
 func newPubSubPool(clusterClient *redis.ClusterClient, config *config) *pubSubPool {
 	return &pubSubPool{
-		clusterClient:   clusterClient,
-		config:          config,
-		nodePubSubs:     make(map[string][]*redis.PubSub),
-		hashslotPubSubs: make(map[int][]*redis.PubSub),
-		pubSubMetadata:  make(map[*redis.PubSub]*pubSubMetadata),
+		clusterClient:      clusterClient,
+		config:             config,
+		nodePubSubs:        make(map[string][]*redis.PubSub),
+		hashslotPubSubs:    make(map[int][]*redis.PubSub),
+		pubSubMetadata:     make(map[*redis.PubSub]*pubSubMetadata),
+		pendingConnections: make(map[string]*pendingConnection),
 	}
+}
+
+// setSubMux sets the parent SubMux reference.
+func (p *pubSubPool) setSubMux(sm *SubMux) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.subMux = sm
 }
 
 // setTopologyMonitor sets the topology monitor.
@@ -342,9 +412,9 @@ func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int) 
 
 // selectLeastLoadedAcrossNodes finds the least-loaded connection across all given nodes.
 // If no connections exist, creates a new one to the least-loaded node (by connection count).
+// Uses a pending connections map to prevent duplicate connection creation under high concurrency.
 func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot int, nodes []string) (*redis.PubSub, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	var bestPubSub *redis.PubSub
 	var bestNodeAddr string
@@ -378,6 +448,7 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 	// If we found an existing connection, reuse it
 	if bestPubSub != nil {
 		p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], bestPubSub)
+		p.mu.Unlock()
 		return bestPubSub, nil
 	}
 
@@ -391,22 +462,70 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 	}
 
 	if bestNodeAddr == "" {
+		p.mu.Unlock()
 		return nil, fmt.Errorf("no valid nodes found for hashslot %d", hashslot)
 	}
+
+	// Check if there's already a pending connection to this node
+	if pending, ok := p.pendingConnections[bestNodeAddr]; ok {
+		// Another goroutine is creating a connection - wait for it
+		p.mu.Unlock()
+		select {
+		case pubsub := <-pending.result:
+			// Re-acquire lock to update hashslot mapping
+			p.mu.Lock()
+			p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], pubsub)
+			p.mu.Unlock()
+			return pubsub, nil
+		case err := <-pending.err:
+			return nil, err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	// Mark that we're creating a connection to this node
+	pending := &pendingConnection{
+		result: make(chan *redis.PubSub),
+		err:    make(chan error),
+	}
+	p.pendingConnections[bestNodeAddr] = pending
 
 	// Release lock before creating connection (it may take time)
 	p.mu.Unlock()
 
 	// Create new connection to the least-loaded node
 	pubsub, err := p.createPubSubToNode(ctx, bestNodeAddr)
+
+	// Re-acquire lock to update maps and clean up pending
+	p.mu.Lock()
+	delete(p.pendingConnections, bestNodeAddr)
+
 	if err != nil {
+		p.mu.Unlock()
+		// Notify any waiting goroutines of the error
+		close(pending.err)
 		return nil, fmt.Errorf("failed to create PubSub to node %s: %w", bestNodeAddr, err)
 	}
 
-	// Re-acquire lock to update maps
-	p.mu.Lock()
 	p.nodePubSubs[bestNodeAddr] = append(p.nodePubSubs[bestNodeAddr], pubsub)
 	p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], pubsub)
+	p.mu.Unlock()
+
+	// Notify any waiting goroutines (they will add their own hashslot mapping)
+	// Use a goroutine to avoid blocking if no one is waiting
+	go func() {
+		for {
+			select {
+			case pending.result <- pubsub:
+				// Successfully notified a waiter
+			default:
+				// No more waiters
+				close(pending.result)
+				return
+			}
+		}
+	}()
 
 	return pubsub, nil
 }
@@ -441,11 +560,28 @@ func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*
 
 	pubsub := p.clusterClient.Subscribe(ctx, channel)
 
+	// Get worker pool and lifecycle context from SubMux
+	p.mu.RLock()
+	sm := p.subMux
+	p.mu.RUnlock()
+
+	var workerPool *WorkerPool
+	var lifecycleCtx context.Context
+	if sm != nil {
+		workerPool = sm.workerPool
+		lifecycleCtx = sm.lifecycleCtx
+	}
+	if lifecycleCtx == nil {
+		lifecycleCtx = context.Background()
+	}
+
 	// Create metadata for this PubSub
 	meta := &pubSubMetadata{
 		pubsub:               pubsub,
 		logger:               p.config.logger.With("component", "pubsub_conn", "node", nodeAddr),
 		recorder:             p.config.recorder,
+		workerPool:           workerPool,
+		lifecycleCtx:         lifecycleCtx,
 		nodeAddr:             nodeAddr,
 		subscriptions:        make(map[string][]*subscription),
 		pendingSubscriptions: make(map[string]*subscription),
@@ -455,9 +591,8 @@ func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*
 	}
 
 	// Set the redirect callback to trigger topology refresh on MOVED/ASK errors
-	if tm != nil {
-		meta.onRedirectDetected = tm.triggerRefresh
-	}
+	// (tm is guaranteed non-nil at this point due to earlier check)
+	meta.onRedirectDetected = tm.triggerRefresh
 
 	// Register metadata
 	p.mu.Lock()
@@ -601,6 +736,7 @@ func (p *pubSubPool) closeAll() error {
 	p.nodePubSubs = make(map[string][]*redis.PubSub)
 	p.hashslotPubSubs = make(map[int][]*redis.PubSub)
 	p.pubSubMetadata = make(map[*redis.PubSub]*pubSubMetadata)
+	p.pendingConnections = make(map[string]*pendingConnection)
 
 	return firstErr
 }
