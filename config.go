@@ -27,6 +27,14 @@ type config struct {
 	// migrationStallCheck is how often to check for stalled migration resubscription progress.
 	migrationStallCheck time.Duration
 
+	// callbackWorkers is the number of worker goroutines in the callback worker pool.
+	// If 0, defaults to runtime.NumCPU() * 2.
+	callbackWorkers int
+
+	// callbackQueueSize is the maximum number of pending callbacks in the worker pool queue.
+	// If 0, defaults to 10000.
+	callbackQueueSize int
+
 	// logger is the structured logger to use.
 	logger *slog.Logger
 
@@ -48,6 +56,8 @@ func defaultConfig() *config {
 		topologyPollInterval:  1 * time.Second,  // Default: poll at least once per second
 		migrationTimeout:      30 * time.Second, // Default: 30s max for migration resubscription
 		migrationStallCheck:   2 * time.Second,  // Default: check for stalls every 2s
+		callbackWorkers:       0,               // Default: 0 means runtime.NumCPU() * 2
+		callbackQueueSize:     0,               // Default: 0 means 10000
 		logger:                slog.Default(),
 		meterProvider:         nil,            // Default: metrics disabled
 		recorder:              &noopMetrics{}, // Default: no-op recorder
@@ -158,5 +168,31 @@ func WithMigrationStallCheck(interval time.Duration) Option {
 func WithMeterProvider(provider metric.MeterProvider) Option {
 	return func(c *config) {
 		c.meterProvider = provider
+	}
+}
+
+// WithCallbackWorkers sets the number of worker goroutines in the callback worker pool.
+// The worker pool bounds the number of concurrent callback executions, preventing
+// goroutine explosion under high message throughput.
+// Default is runtime.NumCPU() * 2.
+func WithCallbackWorkers(workers int) Option {
+	return func(c *config) {
+		if workers < 1 {
+			workers = 1
+		}
+		c.callbackWorkers = workers
+	}
+}
+
+// WithCallbackQueueSize sets the maximum number of pending callbacks in the worker pool queue.
+// When the queue is full, new callbacks will block until space is available, providing
+// backpressure to the message processing pipeline.
+// Default is 10000.
+func WithCallbackQueueSize(size int) Option {
+	return func(c *config) {
+		if size < 1 {
+			size = 1
+		}
+		c.callbackQueueSize = size
 	}
 }
