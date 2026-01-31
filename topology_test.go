@@ -1,6 +1,7 @@
 package submux
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -577,8 +578,12 @@ func TestTopologyMonitor_GetAnySlotForNode_NilState(t *testing.T) {
 
 func TestSendSignalMessages(t *testing.T) {
 	cfg := defaultConfig()
+	sm := &SubMux{
+		lifecycleCtx: context.Background(),
+	}
 	tm := &topologyMonitor{
 		config: cfg,
+		subMux: sm,
 	}
 
 	var receivedMsgs []*Message
@@ -586,7 +591,7 @@ func TestSendSignalMessages(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	callback := func(msg *Message) {
+	callback := func(ctx context.Context, msg *Message) {
 		mu.Lock()
 		receivedMsgs = append(receivedMsgs, msg)
 		mu.Unlock()
@@ -640,8 +645,12 @@ func TestSendSignalMessages(t *testing.T) {
 
 func TestSendMigrationTimeoutSignal(t *testing.T) {
 	cfg := defaultConfig()
+	sm := &SubMux{
+		lifecycleCtx: context.Background(),
+	}
 	tm := &topologyMonitor{
 		config: cfg,
+		subMux: sm,
 	}
 
 	var receivedMsgs []*Message
@@ -649,7 +658,7 @@ func TestSendMigrationTimeoutSignal(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 
-	callback := func(msg *Message) {
+	callback := func(ctx context.Context, msg *Message) {
 		mu.Lock()
 		receivedMsgs = append(receivedMsgs, msg)
 		mu.Unlock()
@@ -691,8 +700,12 @@ func TestSendMigrationTimeoutSignal(t *testing.T) {
 
 func TestSendMigrationStalledSignal(t *testing.T) {
 	cfg := defaultConfig()
+	sm := &SubMux{
+		lifecycleCtx: context.Background(),
+	}
 	tm := &topologyMonitor{
 		config: cfg,
+		subMux: sm,
 	}
 
 	var receivedMsgs []*Message
@@ -700,7 +713,7 @@ func TestSendMigrationStalledSignal(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 
-	callback := func(msg *Message) {
+	callback := func(ctx context.Context, msg *Message) {
 		mu.Lock()
 		receivedMsgs = append(receivedMsgs, msg)
 		mu.Unlock()
@@ -742,8 +755,12 @@ func TestSendMigrationStalledSignal(t *testing.T) {
 
 func TestSendSignalMessages_EmptySubscriptions(t *testing.T) {
 	cfg := defaultConfig()
+	sm := &SubMux{
+		lifecycleCtx: context.Background(),
+	}
 	tm := &topologyMonitor{
 		config: cfg,
+		subMux: sm,
 	}
 
 	// Should not panic with empty subscription list
@@ -754,8 +771,12 @@ func TestSendSignalMessages_EmptySubscriptions(t *testing.T) {
 
 func TestSendSignalMessages_NilCallback(t *testing.T) {
 	cfg := defaultConfig()
+	sm := &SubMux{
+		lifecycleCtx: context.Background(),
+	}
 	tm := &topologyMonitor{
 		config: cfg,
+		subMux: sm,
 	}
 
 	// Should not panic with nil callback
@@ -845,7 +866,7 @@ func TestHandleMigration_WithAffectedSubscriptions_NoAutoResubscribe(t *testing.
 	var wg sync.WaitGroup
 	wg.Add(1)
 
-	callback := func(msg *Message) {
+	callback := func(ctx context.Context, msg *Message) {
 		mu.Lock()
 		receivedSignal = msg
 		mu.Unlock()

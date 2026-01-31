@@ -493,6 +493,17 @@ func (tm *topologyMonitor) sendSignalMessages(subs []*subscription, migration ha
 
 	timestamp := time.Now()
 
+	// Get worker pool and lifecycle context from subMux (may be nil in tests)
+	var workerPool *WorkerPool
+	var lifecycleCtx context.Context
+	if tm.subMux != nil {
+		workerPool = tm.subMux.workerPool
+		lifecycleCtx = tm.subMux.lifecycleCtx
+	}
+	if lifecycleCtx == nil {
+		lifecycleCtx = context.Background()
+	}
+
 	// Send to all affected subscriptions
 	// Create a separate message copy for each subscription to avoid race conditions
 	for _, sub := range subs {
@@ -502,7 +513,7 @@ func (tm *topologyMonitor) sendSignalMessages(subs []*subscription, migration ha
 			Timestamp:        timestamp,
 			SubscriptionType: sub.subType,
 		}
-		invokeCallback(tm.config.logger, tm.config.recorder, sub.callback, msg)
+		invokeCallback(tm.config.logger, tm.config.recorder, workerPool, lifecycleCtx, sub.callback, msg)
 	}
 }
 
@@ -521,6 +532,17 @@ func (tm *topologyMonitor) sendMigrationTimeoutSignal(subs []*subscription, migr
 
 	timestamp := time.Now()
 
+	// Get worker pool and lifecycle context from subMux (may be nil in tests)
+	var workerPool *WorkerPool
+	var lifecycleCtx context.Context
+	if tm.subMux != nil {
+		workerPool = tm.subMux.workerPool
+		lifecycleCtx = tm.subMux.lifecycleCtx
+	}
+	if lifecycleCtx == nil {
+		lifecycleCtx = context.Background()
+	}
+
 	// Send to all affected subscriptions
 	// Create a separate message copy for each subscription to avoid race conditions
 	for _, sub := range subs {
@@ -530,7 +552,7 @@ func (tm *topologyMonitor) sendMigrationTimeoutSignal(subs []*subscription, migr
 			Timestamp:        timestamp,
 			SubscriptionType: sub.subType,
 		}
-		invokeCallback(tm.config.logger, tm.config.recorder, sub.callback, msg)
+		invokeCallback(tm.config.logger, tm.config.recorder, workerPool, lifecycleCtx, sub.callback, msg)
 	}
 
 	tm.config.logger.Warn("submux: migration timeout", "hashslot", migration.hashslot, "duration", duration)
@@ -551,6 +573,17 @@ func (tm *topologyMonitor) sendMigrationStalledSignal(subs []*subscription, migr
 
 	timestamp := time.Now()
 
+	// Get worker pool and lifecycle context from subMux (may be nil in tests)
+	var workerPool *WorkerPool
+	var lifecycleCtx context.Context
+	if tm.subMux != nil {
+		workerPool = tm.subMux.workerPool
+		lifecycleCtx = tm.subMux.lifecycleCtx
+	}
+	if lifecycleCtx == nil {
+		lifecycleCtx = context.Background()
+	}
+
 	// Send to all affected subscriptions
 	// Create a separate message copy for each subscription to avoid race conditions
 	for _, sub := range subs {
@@ -560,7 +593,7 @@ func (tm *topologyMonitor) sendMigrationStalledSignal(subs []*subscription, migr
 			Timestamp:        timestamp,
 			SubscriptionType: sub.subType,
 		}
-		invokeCallback(tm.config.logger, tm.config.recorder, sub.callback, msg)
+		invokeCallback(tm.config.logger, tm.config.recorder, workerPool, lifecycleCtx, sub.callback, msg)
 	}
 
 	tm.config.logger.Warn("submux: migration stalled", "hashslot", migration.hashslot, "duration", stallDuration)

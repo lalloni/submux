@@ -179,6 +179,16 @@ type SubMux struct {
 	// topologyMonitor monitors cluster topology changes.
 	topologyMonitor *topologyMonitor
 
+	// workerPool is the bounded worker pool for callback execution.
+	workerPool *WorkerPool
+
+	// lifecycleCtx is the context for the SubMux lifecycle.
+	// Canceled when Close() is called.
+	lifecycleCtx context.Context
+
+	// lifecycleCancel cancels the lifecycle context.
+	lifecycleCancel context.CancelFunc
+
 	// subscriptions maps channel/pattern name to list of subscriptions (allowing multiple subscriptions per channel).
 	subscriptions map[string][]*subscription
 
@@ -207,16 +217,32 @@ func New(clusterClient *redis.ClusterClient, opts ...Option) (*SubMux, error) {
 	// Create metrics recorder from configured MeterProvider
 	cfg.recorder = newMetricsRecorder(cfg.meterProvider, cfg.logger)
 
+	// Create lifecycle context
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+
+	// Create worker pool for callback execution
+	workerPool := NewWorkerPool(cfg.callbackWorkers, cfg.callbackQueueSize)
+	workerPool.Start()
+
+	// Register worker pool observable gauges for metrics
+	cfg.recorder.registerWorkerPoolGauges(workerPool)
+
 	// Create PubSub pool
 	pool := newPubSubPool(clusterClient, cfg)
 
 	// Create SubMux
 	subMux := &SubMux{
-		clusterClient: clusterClient,
-		config:        cfg,
-		pool:          pool,
-		subscriptions: make(map[string][]*subscription),
+		clusterClient:   clusterClient,
+		config:          cfg,
+		pool:            pool,
+		workerPool:      workerPool,
+		lifecycleCtx:    lifecycleCtx,
+		lifecycleCancel: lifecycleCancel,
+		subscriptions:   make(map[string][]*subscription),
 	}
+
+	// Set SubMux reference in pool for accessing worker pool and lifecycle context
+	subMux.pool.setSubMux(subMux)
 
 	// Create and start topology monitor
 	subMux.topologyMonitor = newTopologyMonitor(clusterClient, cfg, subMux)
@@ -318,10 +344,6 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 		return nil, fmt.Errorf("no metadata found for PubSub")
 	}
 
-	// Check if channel is already subscribed on this PubSub (per-PubSub check)
-	existingSubs := meta.getSubscriptions(channel)
-	isFirstSubscriptionOnPubSub := len(existingSubs) == 0
-
 	// Create subscription
 	sub := &subscription{
 		channel:   channel,
@@ -330,23 +352,24 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 		callback:  callback,
 		state:     subStatePending,
 		confirmCh: make(chan error, 1),
+		doneCh:    make(chan struct{}),
 		hashslot:  hashslot,
 	}
 
-	// Register subscription in global map
+	// Always track subscriptions in the global map.
+	// This is needed for signal delivery on topology changes (regardless of auto-resubscribe).
+	// The auto-resubscribe flag only controls whether we automatically recreate
+	// subscriptions after migration, not whether we track or send signals.
 	sm.mu.Lock()
 	sm.subscriptions[channel] = append(sm.subscriptions[channel], sub)
 	sm.mu.Unlock()
 
-	// Register subscription in PubSub metadata
-	meta.addSubscription(sub)
+	// Atomically check if we need to send a SUBSCRIBE command under the metadata lock.
+	// This prevents race conditions where multiple goroutines think they're first.
+	needsSubscribe, existingPending := meta.addSubscriptionAndCheckFirst(sub, channel)
 
-	// Only send SUBSCRIBE command if this is the first subscription to this channel on this PubSub
-	// (Redis only needs one SUBSCRIBE per channel per connection)
-	if isFirstSubscriptionOnPubSub {
-		// Add subscription to pending list BEFORE sending command to prevent race condition
-		// where confirmation arrives before we add it to pending
-		meta.addPendingSubscription(sub)
+	if needsSubscribe {
+		// We're the first subscription on this PubSub for this channel - send SUBSCRIBE
 
 		// Create and send subscription command
 		cmd := &command{
@@ -364,19 +387,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 			// Remove from pending list on error
 			meta.removePendingSubscription(channel)
 			// Cleanup on error
-			sm.mu.Lock()
-			// Remove the subscription we just added
-			subs := sm.subscriptions[channel]
-			for i, s := range subs {
-				if s == sub {
-					sm.subscriptions[channel] = slices.Delete(subs, i, i+1)
-					break
-				}
-			}
-			if len(sm.subscriptions[channel]) == 0 {
-				delete(sm.subscriptions, channel)
-			}
-			sm.mu.Unlock()
+			sm.removeSubscriptionFromMap(channel, sub)
 			meta.removeSubscription(sub)
 			return nil, fmt.Errorf("failed to send subscription command: %w", err)
 		}
@@ -387,18 +398,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 			sm.config.recorder.recordSubscriptionAttempt(subscriptionTypeToString(subType), false)
 
 			// Cleanup on error
-			sm.mu.Lock()
-			subs := sm.subscriptions[channel]
-			for i, s := range subs {
-				if s == sub {
-					sm.subscriptions[channel] = slices.Delete(subs, i, i+1)
-					break
-				}
-			}
-			if len(sm.subscriptions[channel]) == 0 {
-				delete(sm.subscriptions, channel)
-			}
-			sm.mu.Unlock()
+			sm.removeSubscriptionFromMap(channel, sub)
 			meta.removeSubscription(sub)
 			return nil, fmt.Errorf("subscription confirmation failed: %w", err)
 		}
@@ -408,24 +408,34 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 			// Record failed subscription attempt
 			sm.config.recorder.recordSubscriptionAttempt(subscriptionTypeToString(subType), false)
 
-			sm.mu.Lock()
-			subs := sm.subscriptions[channel]
-			for i, s := range subs {
-				if s == sub {
-					sm.subscriptions[channel] = slices.Delete(subs, i, i+1)
-					break
-				}
-			}
-			if len(sm.subscriptions[channel]) == 0 {
-				delete(sm.subscriptions, channel)
-			}
-			sm.mu.Unlock()
+			sm.removeSubscriptionFromMap(channel, sub)
 			meta.removeSubscription(sub)
 			return nil, fmt.Errorf("%w", ErrSubscriptionFailed)
 		}
+	} else if existingPending != nil {
+		// Another goroutine is already subscribing to this channel - wait for their confirmation
+		// using waitForActive which broadcasts to all waiters
+		if err := existingPending.waitForActive(ctx); err != nil {
+			// The other subscription failed - we should also fail
+			sm.config.recorder.recordSubscriptionAttempt(subscriptionTypeToString(subType), false)
+			sm.removeSubscriptionFromMap(channel, sub)
+			meta.removeSubscription(sub)
+			return nil, fmt.Errorf("subscription confirmation failed (waiting on concurrent subscription): %w", err)
+		}
+
+		// Check if the pending subscription succeeded
+		if existingPending.getState() == subStateFailed {
+			sm.config.recorder.recordSubscriptionAttempt(subscriptionTypeToString(subType), false)
+			sm.removeSubscriptionFromMap(channel, sub)
+			meta.removeSubscription(sub)
+			return nil, fmt.Errorf("%w", ErrSubscriptionFailed)
+		}
+
+		// The other subscription succeeded - mark ourselves as active
+		sub.setState(subStateActive, nil)
 	} else {
-		// Not the first subscription - mark as active immediately
-		// (the connection is already subscribed to this channel)
+		// Not the first subscription and no pending - channel is already active
+		// Mark as active immediately
 		sub.setState(subStateActive, nil)
 	}
 
@@ -466,31 +476,21 @@ func (sm *SubMux) unsubscribeSubscription(sub *Sub) error {
 		subsByChannel[channel] = append(subsByChannel[channel], internalSub)
 
 		// Check if this is the last subscription for this channel
-		sm.mu.RLock()
-		allSubsRef := sm.subscriptions[channel]
-		// Make a copy to avoid races when other goroutines modify the slice
-		allSubs := make([]*subscription, len(allSubsRef))
-		copy(allSubs, allSubsRef)
-		sm.mu.RUnlock()
-
-		// Count how many subscriptions remain after removing ours
-		remainingCount := 0
-		for _, s := range allSubs {
-			isOurs := false
-			for _, ourSub := range sub.subs {
-				if s == ourSub {
-					isOurs = true
-					break
+		// We need to check the PubSub metadata since it always tracks subscriptions
+		meta := sm.pool.getMetadata(internalSub.pubsub)
+		if meta != nil {
+			allSubs := meta.getSubscriptions(channel)
+			// Count how many subscriptions remain after removing ours
+			remainingCount := 0
+			for _, s := range allSubs {
+				if !slices.Contains(sub.subs, s) {
+					remainingCount++
 				}
 			}
-			if !isOurs {
-				remainingCount++
+			// If this is the last subscription for this channel, we need to send UNSUBSCRIBE
+			if remainingCount == 0 {
+				channelsToUnsub[channel] = true
 			}
-		}
-
-		// If this is the last subscription for this channel, we need to send UNSUBSCRIBE
-		if remainingCount == 0 {
-			channelsToUnsub[channel] = true
 		}
 	}
 
@@ -564,12 +564,40 @@ func (sm *SubMux) unsubscribeSubscription(sub *Sub) error {
 	return nil
 }
 
+// removeSubscriptionFromMap removes a subscription from the global subscriptions map.
+// This method acquires the lock internally.
+func (sm *SubMux) removeSubscriptionFromMap(channel string, sub *subscription) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.removeSubscriptionFromMapLocked(channel, sub)
+}
+
+// removeSubscriptionFromMapLocked removes a subscription from the global subscriptions map.
+// The caller must hold sm.mu.
+func (sm *SubMux) removeSubscriptionFromMapLocked(channel string, sub *subscription) {
+	subs := sm.subscriptions[channel]
+	for i, s := range subs {
+		if s == sub {
+			sm.subscriptions[channel] = slices.Delete(subs, i, i+1)
+			break
+		}
+	}
+	if len(sm.subscriptions[channel]) == 0 {
+		delete(sm.subscriptions, channel)
+	}
+}
+
 // Close closes all subscriptions and connections, stops all goroutines, and releases resources.
 // It is safe to call multiple times.
 func (sm *SubMux) Close() error {
 	var firstErr error
 
 	sm.closeOnce.Do(func() {
+		// Cancel lifecycle context to signal shutdown to callbacks
+		if sm.lifecycleCancel != nil {
+			sm.lifecycleCancel()
+		}
+
 		sm.mu.Lock()
 		sm.closed = true
 		subs := make([]*subscription, 0)
@@ -591,6 +619,11 @@ func (sm *SubMux) Close() error {
 		// Close all connections
 		if err := sm.pool.closeAll(); err != nil && firstErr == nil {
 			firstErr = err
+		}
+
+		// Stop worker pool (will drain remaining tasks)
+		if sm.workerPool != nil {
+			sm.workerPool.Stop()
 		}
 
 		// Clear subscriptions

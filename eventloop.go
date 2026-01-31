@@ -177,7 +177,7 @@ func handleSubscriptionConfirmation(meta *pubSubMetadata, sub *redis.Subscriptio
 	// sub.Count is the total number of subscriptions
 
 	switch sub.Kind {
-	case "subscribe", "psubscribe", "ssubscribe":
+	case redisKindSubscribe, redisKindPSubscribe, redisKindSSubscribe:
 		// Mark the pending subscription as active
 		pendingSub := meta.getPendingSubscription(sub.Channel)
 		if pendingSub != nil {
@@ -185,7 +185,7 @@ func handleSubscriptionConfirmation(meta *pubSubMetadata, sub *redis.Subscriptio
 			meta.removePendingSubscription(sub.Channel)
 		}
 
-	case "unsubscribe", "punsubscribe", "sunsubscribe":
+	case redisKindUnsubscribe, redisKindPUnsubscribe, redisKindSUnsubscribe:
 		// Unsubscribe confirmation - nothing to do
 
 	default:
@@ -216,7 +216,7 @@ func handleMessageFromPubSub(meta *pubSubMetadata, channel, payload string) erro
 	}
 
 	for _, sub := range subs {
-		invokeCallback(meta.logger, meta.recorder, sub.callback, msg)
+		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.lifecycleCtx, sub.callback, msg)
 	}
 	return nil
 }
@@ -243,7 +243,7 @@ func handlePMessageFromPubSub(meta *pubSubMetadata, pattern, channel, payload st
 	}
 
 	for _, sub := range subs {
-		invokeCallback(meta.logger, meta.recorder, sub.callback, msg)
+		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.lifecycleCtx, sub.callback, msg)
 	}
 	return nil
 }
@@ -272,7 +272,7 @@ func handleSMessageFromPubSub(meta *pubSubMetadata, channel, payload string) err
 	}
 
 	for _, sub := range subs {
-		invokeCallback(meta.logger, meta.recorder, sub.callback, msg)
+		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.lifecycleCtx, sub.callback, msg)
 	}
 	return nil
 }
@@ -298,6 +298,6 @@ func notifySubscriptionsOfFailure(meta *pubSubMetadata, err error) {
 			Timestamp:        time.Now(),
 			SubscriptionType: sub.subType,
 		}
-		invokeCallback(meta.logger, meta.recorder, sub.callback, msg)
+		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.lifecycleCtx, sub.callback, msg)
 	}
 }

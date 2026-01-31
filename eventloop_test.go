@@ -193,7 +193,7 @@ func TestProcessResponse_RegularMessage(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 
-	callback := func(msg *Message) {
+	callback := func(ctx context.Context, msg *Message) {
 		mu.Lock()
 		receivedMsg = msg
 		mu.Unlock()
@@ -248,7 +248,7 @@ func TestProcessResponse_PatternMessage(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 
-	callback := func(msg *Message) {
+	callback := func(ctx context.Context, msg *Message) {
 		mu.Lock()
 		receivedMsg = msg
 		mu.Unlock()
@@ -303,7 +303,7 @@ func TestProcessResponse_ShardedMessage(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 
-	callback := func(msg *Message) {
+	callback := func(ctx context.Context, msg *Message) {
 		mu.Lock()
 		receivedMsg = msg
 		mu.Unlock()
@@ -382,7 +382,7 @@ func TestProcessResponse_MultipleSubscriptions(t *testing.T) {
 	callCount := 0
 	var mu sync.Mutex
 
-	callback := func(msg *Message) {
+	callback := func(ctx context.Context, msg *Message) {
 		mu.Lock()
 		callCount++
 		mu.Unlock()
@@ -535,7 +535,7 @@ func TestHandleMessageFromPubSub(t *testing.T) {
 
 	sub := &subscription{
 		channel: "ch1",
-		callback: func(msg *Message) {
+		callback: func(ctx context.Context, msg *Message) {
 			mu.Lock()
 			received = msg
 			mu.Unlock()
@@ -579,7 +579,7 @@ func TestHandlePMessageFromPubSub(t *testing.T) {
 
 	sub := &subscription{
 		channel: "pat*",
-		callback: func(msg *Message) {
+		callback: func(ctx context.Context, msg *Message) {
 			mu.Lock()
 			received = msg
 			mu.Unlock()
@@ -623,7 +623,7 @@ func TestHandleSMessageFromPubSub(t *testing.T) {
 
 	sub := &subscription{
 		channel: "sharded",
-		callback: func(msg *Message) {
+		callback: func(ctx context.Context, msg *Message) {
 			mu.Lock()
 			received = msg
 			mu.Unlock()
@@ -661,7 +661,7 @@ func TestNotifySubscriptionsOfFailure(t *testing.T) {
 	var receivedSignals []*Message
 	var mu sync.Mutex
 
-	callback := func(msg *Message) {
+	callback := func(ctx context.Context, msg *Message) {
 		mu.Lock()
 		receivedSignals = append(receivedSignals, msg)
 		mu.Unlock()
