@@ -56,7 +56,7 @@ func main() {
 
 	// 3. Subscribe to channels
 	ctx := context.Background()
-	sub, err := sm.SubscribeSync(ctx, []string{"my-channel"}, func(msg *submux.Message) {
+	sub, err := sm.SubscribeSync(ctx, []string{"my-channel"}, func(ctx context.Context, msg *submux.Message) {
 		// Handle different message types
 		switch msg.Type {
 		case submux.MessageTypeMessage:
@@ -87,7 +87,7 @@ submux supports all three Redis pub/sub mechanisms:
 Subscribe to specific channels by exact name:
 
 ```go
-sub, err := sm.SubscribeSync(ctx, []string{"orders", "payments"}, func(msg *submux.Message) {
+sub, err := sm.SubscribeSync(ctx, []string{"orders", "payments"}, func(ctx context.Context, msg *submux.Message) {
 	fmt.Printf("Channel %s: %s\n", msg.Channel, msg.Payload)
 })
 ```
@@ -97,7 +97,7 @@ sub, err := sm.SubscribeSync(ctx, []string{"orders", "payments"}, func(msg *subm
 Subscribe using glob-style patterns:
 
 ```go
-sub, err := sm.PSubscribeSync(ctx, []string{"news:*", "logs:error:*"}, func(msg *submux.Message) {
+sub, err := sm.PSubscribeSync(ctx, []string{"news:*", "logs:error:*"}, func(ctx context.Context, msg *submux.Message) {
 	// msg.Pattern contains the matched pattern
 	// msg.Channel contains the actual channel name
 	fmt.Printf("Pattern %s matched channel %s: %s\n", msg.Pattern, msg.Channel, msg.Payload)
@@ -111,7 +111,7 @@ Supported wildcards: `?` (single char), `*` (multiple chars), `[abc]` (character
 Cluster-aware pub/sub with guaranteed node affinity and lower overhead:
 
 ```go
-sub, err := sm.SSubscribeSync(ctx, []string{"events", "notifications"}, func(msg *submux.Message) {
+sub, err := sm.SSubscribeSync(ctx, []string{"events", "notifications"}, func(ctx context.Context, msg *submux.Message) {
 	fmt.Printf("Sharded channel %s: %s\n", msg.Channel, msg.Payload)
 })
 ```
@@ -145,6 +145,8 @@ sm, err := submux.New(rdb,
 | `WithMigrationTimeout(duration)` | `30s` | Max time to wait for migration resubscription (min: 1s) |
 | `WithMigrationStallCheck(duration)` | `2s` | How often to check for stalled migrations (min: 100ms) |
 | `WithMinConnectionsPerNode(int)` | `1` | Minimum connection pool size per node |
+| `WithCallbackWorkers(int)` | `runtime.NumCPU() * 2` | Number of worker goroutines for callback execution |
+| `WithCallbackQueueSize(int)` | `10000` | Maximum pending callbacks in worker pool queue |
 | `WithLogger(*slog.Logger)` | `slog.Default()` | Custom structured logger |
 | `WithMeterProvider(metric.MeterProvider)` | `nil` | OpenTelemetry metrics provider (opt-in) |
 
@@ -174,7 +176,7 @@ sm, _ := submux.New(rdb, submux.WithNodePreference(submux.PreferReplicas))
 **Critical for production:** Always handle `MessageTypeSignal` in callbacks to monitor topology events:
 
 ```go
-sub, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(msg *submux.Message) {
+sub, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(ctx context.Context, msg *submux.Message) {
 	switch msg.Type {
 	case submux.MessageTypeMessage:
 		// Normal pub/sub message
@@ -264,7 +266,7 @@ if err := sub.Unsubscribe(unsubCtx); err != nil {
 Callbacks are automatically wrapped with panic recovery. Panics are logged but don't crash the application:
 
 ```go
-sub, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(msg *submux.Message) {
+sub, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(ctx context.Context, msg *submux.Message) {
 	// If this panics, it's caught and logged, other subscriptions continue working
 	riskyOperation(msg.Payload)
 })
@@ -279,7 +281,7 @@ By default, auto-resubscribe is **disabled**. Your application must handle migra
 ```go
 sm, _ := submux.New(rdb) // auto-resubscribe is false by default
 
-sub, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(msg *submux.Message) {
+sub, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(ctx context.Context, msg *submux.Message) {
 	if msg.Type == submux.MessageTypeSignal && msg.Signal.EventType == submux.EventMigration {
 		log.Printf("Migration detected - application must handle resubscription")
 
@@ -302,7 +304,7 @@ sm, _ := submux.New(rdb,
 	submux.WithAutoResubscribe(true), // Enable automatic resubscription
 )
 
-sub, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(msg *submux.Message) {
+sub, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(ctx context.Context, msg *submux.Message) {
 	switch msg.Type {
 	case submux.MessageTypeMessage:
 		// Process normal messages
@@ -334,17 +336,17 @@ Different callbacks can subscribe to the same channel independently:
 
 ```go
 // Subscriber 1: Process orders
-sub1, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(msg *submux.Message) {
+sub1, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(ctx context.Context, msg *submux.Message) {
 	processOrder(msg.Payload)
 })
 
 // Subscriber 2: Log orders for audit
-sub2, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(msg *submux.Message) {
+sub2, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(ctx context.Context, msg *submux.Message) {
 	auditLog(msg.Payload)
 })
 
 // Subscriber 3: Update metrics
-sub3, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(msg *submux.Message) {
+sub3, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(ctx context.Context, msg *submux.Message) {
 	metrics.Increment("orders.received")
 })
 
@@ -357,7 +359,7 @@ sub1.Unsubscribe(ctx) // sub2 and sub3 continue receiving messages
 ```go
 sub, _ := sm.PSubscribeSync(ctx,
 	[]string{"logs:*", "events:user:*", "metrics:cpu:*"},
-	func(msg *submux.Message) {
+	func(ctx context.Context, msg *submux.Message) {
 		// msg.Pattern tells you which pattern matched
 		// msg.Channel tells you the actual channel name
 		log.Printf("[%s] %s: %s", msg.Pattern, msg.Channel, msg.Payload)
@@ -483,7 +485,7 @@ func main() {
 	logger.Info("Shutting down gracefully...")
 }
 
-func handleMessage(msg *submux.Message) {
+func handleMessage(ctx context.Context, msg *submux.Message) {
 	switch msg.Type {
 	case submux.MessageTypeMessage:
 		// Process message
@@ -536,7 +538,7 @@ sm, _ := submux.New(rdb,
 
 ### Available Metrics
 
-**11 Counters:**
+**13 Counters:**
 - `submux.messages.received` - Messages received from Redis (by type, node)
 - `submux.callbacks.invoked` - Callback invocations (by subscription type)
 - `submux.callbacks.panics` - Panic recoveries (by subscription type)
@@ -548,12 +550,19 @@ sm, _ := submux.New(rdb,
 - `submux.migrations.stalled` - Migrations stalled (>2s no progress)
 - `submux.migrations.timeout` - Migrations timed out (>30s)
 - `submux.topology.refreshes` - Topology refresh attempts (by success)
+- `submux.workerpool.submissions` - Callback submissions to worker pool (blocked attribute)
+- `submux.workerpool.dropped` - Callbacks dropped when pool stopped
 
-**4 Histograms:**
+**5 Histograms:**
 - `submux.callbacks.latency` - Callback execution time (milliseconds)
 - `submux.messages.latency` - End-to-end message latency (milliseconds)
 - `submux.migrations.duration` - Migration completion time (milliseconds)
 - `submux.topology.refresh_latency` - Topology refresh time (milliseconds)
+- `submux.workerpool.queue_wait` - Queue wait time before callback execution (milliseconds)
+
+**2 Observable Gauges:**
+- `submux.workerpool.queue_depth` - Current tasks in worker pool queue
+- `submux.workerpool.queue_capacity` - Maximum worker pool queue capacity
 
 ### Performance Characteristics
 

@@ -70,6 +70,37 @@ PubSub Connection
         }
 ```
 
+### 2.4 Lock Ordering
+
+To prevent deadlocks, locks must be acquired in a consistent order throughout the codebase. The lock acquisition order from highest to lowest priority is:
+
+```
+1. SubMux.mu              (subscription management)
+2. topologyMonitor.mu     (topology refresh coordination)
+3. topologyState.mu       (topology data access)
+4. pubSubPool.mu          (connection pool management)
+5. pubSubMetadata.mu      (per-connection state)
+```
+
+**Key Rules:**
+*   Never acquire a higher-priority lock while holding a lower-priority lock.
+*   When multiple locks are needed, acquire them in the order listed above.
+*   Release locks in reverse order of acquisition.
+*   Prefer copying state references under a lock, then releasing the lock before calling methods that may acquire other locks.
+
+**Example Pattern** (from `topology.go`):
+```go
+// Copy state reference under lock to avoid nested lock acquisition
+tm.mu.Lock()
+state := tm.currentState
+tm.mu.Unlock()
+
+// Now safely access topologyState methods (which acquire their own lock)
+if state != nil {
+    return state.getNodeForHashslot(hashslot)
+}
+```
+
 ---
 
 ## 3. Resilience and Topology Handling
@@ -112,7 +143,7 @@ If a connection fails (EOF, timeout):
 ### 4.1 Core Types
 *   **`SubMux`**: The main client wrapper.
 *   **`Sub`**: Represents a specific callback's registration. Used to unsubscribe.
-*   **`MessageCallback`**: `func(msg *Message)` - invoked asynchronously for all events.
+*   **`MessageCallback`**: `func(ctx context.Context, msg *Message)` - invoked asynchronously for all events. The context is derived from the SubMux lifecycle and is canceled when `Close()` is called.
 
 ### 4.2 Subscription Methods (`Sync`)
 All subscription methods are **synchronous**. They return only after Redis confirms the subscription.
@@ -137,6 +168,8 @@ Configured via functional options in `New()`:
 *   `WithMigrationTimeout(time.Duration)`: Maximum duration to wait for migration resubscription (default 30s).
 *   `WithMigrationStallCheck(time.Duration)`: How often to check for stalled migration progress (default 2s).
 *   `WithMeterProvider(metric.MeterProvider)`: OpenTelemetry MeterProvider for production observability (default: `nil`, metrics disabled).
+*   `WithCallbackWorkers(int)`: Number of worker goroutines for callback execution (default: `runtime.NumCPU() * 2`).
+*   `WithCallbackQueueSize(int)`: Maximum pending callbacks in the worker pool queue (default: `10000`).
 
 ---
 
@@ -244,7 +277,7 @@ func main() {
     defer subMux.Close() // Critical cleanup
 
     // 4. Define robust callback
-    callback := func(msg *submux.Message) {
+    callback := func(ctx context.Context, msg *submux.Message) {
         switch msg.Type {
         case submux.MessageTypeSignal:
             log.Printf("Topology event: %s info=%s", msg.Signal.EventType, msg.Signal.Details)
@@ -292,7 +325,7 @@ submux provides built-in OpenTelemetry metrics for production monitoring and deb
 
 #### 6.5.2 Available Metrics
 
-**Counters (11):**
+**Counters (13):**
 | Metric Name | Description | Attributes |
 |-------------|-------------|------------|
 | `submux.messages.received` | Messages from Redis | subscription_type, node_address |
@@ -306,14 +339,23 @@ submux provides built-in OpenTelemetry metrics for production monitoring and deb
 | `submux.migrations.stalled` | Stalled migrations (>2s) | - |
 | `submux.migrations.timeout` | Migration timeouts (>30s) | - |
 | `submux.topology.refreshes` | Topology refresh attempts | success |
+| `submux.workerpool.submissions` | Callback submissions to pool | blocked |
+| `submux.workerpool.dropped` | Callbacks dropped (pool stopped) | - |
 
-**Histograms (4):**
+**Histograms (5):**
 | Metric Name | Description | Unit | Attributes |
 |-------------|-------------|------|------------|
 | `submux.callbacks.latency` | Callback execution time | ms | subscription_type |
 | `submux.messages.latency` | End-to-end message latency | ms | subscription_type |
 | `submux.migrations.duration` | Migration completion time | ms | - |
 | `submux.topology.refresh_latency` | Topology refresh time | ms | - |
+| `submux.workerpool.queue_wait` | Queue wait time before execution | ms | - |
+
+**Observable Gauges (2):**
+| Metric Name | Description | Unit | Attributes |
+|-------------|-------------|------|------------|
+| `submux.workerpool.queue_depth` | Current tasks in queue | {task} | - |
+| `submux.workerpool.queue_capacity` | Maximum queue capacity | {task} | - |
 
 #### 6.5.3 Cardinality Management
 
@@ -348,8 +390,41 @@ See section 6.4 for a complete production example with Prometheus integration.
 
 ---
 
+### 6.6 Worker Pool Architecture
+
+Callbacks are executed through a **bounded worker pool** that prevents goroutine explosion under high message throughput.
+
+**Design:**
+```
+Messages → Worker Pool Queue → Worker Goroutines → Callback Execution
+              (bounded)         (fixed count)
+```
+
+**Configuration:**
+*   `WithCallbackWorkers(n)`: Number of worker goroutines (default: `runtime.NumCPU() * 2`)
+*   `WithCallbackQueueSize(n)`: Queue capacity (default: `10000`)
+
+**Backpressure Behavior:**
+*   When the queue is full, `invokeCallback()` blocks until space is available
+*   This propagates backpressure to the Redis message processing pipeline
+*   Use the `submux.workerpool.queue_wait` metric to monitor queue latency
+
+**Metrics:**
+| Metric Name | Type | Description |
+|-------------|------|-------------|
+| `submux.workerpool.submissions` | Counter | Total callback submissions (attribute: `blocked=true` when queue was full) |
+| `submux.workerpool.dropped` | Counter | Callbacks dropped when pool was stopped |
+| `submux.workerpool.queue_wait` | Histogram | Time callbacks wait in queue before execution (ms) |
+| `submux.workerpool.queue_depth` | Observable Gauge | Current number of tasks in queue |
+| `submux.workerpool.queue_capacity` | Observable Gauge | Maximum queue capacity |
+
+**Lifecycle:**
+*   Workers start when `New()` is called
+*   Workers stop when `Close()` is called, draining any remaining tasks
+*   The callback context (`ctx` parameter) is canceled when `Close()` is called
+
+---
+
 ## 7. Future Roadmap
-*   **Advanced Flow Control**: Backpressure handling if callbacks are too slow.
-*   **Observable Gauges**: Polling-based metrics for active subscriptions and connections.
+*   **Observable Gauges**: Polling-based metrics for active subscriptions and connections. (Worker pool gauges `queue_depth` and `queue_capacity` are already implemented.)
 *   **Dynamic Tuning**: Auto-adjusting pool sizes based on load.
-*   **Bounded Goroutines**: Worker pool for callback execution to limit goroutine count.

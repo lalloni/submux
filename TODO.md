@@ -1,15 +1,5 @@
 # TODO
 
-## Bound goroutine count
-
-Currently, there are a few uses of goroutines that can lead to having an unbounded number of goroutines.
-
-1. Callbacks run in dedicated one-off goroutines
-2. Automatic resubscriptions run in dedicated one-off goroutines
-3. etc
-
-We need to find better alternatives.
-
 ## Make subscription tracking optional
 
 The *SubscribeSync methods could receive an option to request auto-resubscription explicitly, if not, then the subscription doesn't need to be tracked centrally at submux.
@@ -20,9 +10,23 @@ Alternatively, re-subscription could be determined by the callback function when
 
 # Completed
 
+## ✅ Bound goroutine count
+
+**Status:** Completed - Worker pool with bounded goroutines and backpressure
+
+**Implementation Summary:**
+- ✅ Bounded worker pool prevents goroutine explosion under high throughput
+- ✅ Configuration: `WithCallbackWorkers(n)` (default: `runtime.NumCPU() * 2`)
+- ✅ Configuration: `WithCallbackQueueSize(n)` (default: `10000`)
+- ✅ Backpressure when queue is full (blocks until space available)
+- ✅ Worker pool telemetry: submissions, dropped, queue_wait, queue_depth, queue_capacity
+- ✅ Context passed to callbacks, canceled on `Close()`
+
+---
+
 ## ✅ Integrate with OpenTelemetry
 
-**Status:** Completed - Full OpenTelemetry instrumentation with 21 metrics (11 counters, 4 histograms, 2 observable gauges planned)
+**Status:** Completed - Full OpenTelemetry instrumentation with 20 metrics (13 counters, 5 histograms, 2 observable gauges)
 
 **Implementation Summary:**
 - ✅ Optional dependency with `WithMeterProvider(metric.MeterProvider)` configuration
@@ -34,7 +38,7 @@ Alternatively, re-subscription could be determined by the callback function when
 
 **Metrics Implemented:**
 
-**Counters (11):**
+**Counters (13):**
 - `submux.messages.received` - Messages from Redis
 - `submux.callbacks.invoked` - Callback invocations
 - `submux.callbacks.panics` - Panic recoveries
@@ -46,13 +50,18 @@ Alternatively, re-subscription could be determined by the callback function when
 - `submux.migrations.stalled` - Stalled migrations (>2s)
 - `submux.migrations.timeout` - Migration timeouts (>30s)
 - `submux.topology.refreshes` - Topology refresh attempts
+- `submux.workerpool.submissions` - Callback submissions to pool
+- `submux.workerpool.dropped` - Callbacks dropped (pool stopped)
 
-**Histograms (4):**
+**Histograms (5):**
 - `submux.callbacks.latency` - Callback execution time
 - `submux.messages.latency` - End-to-end message latency
 - `submux.migrations.duration` - Migration completion time
 - `submux.topology.refresh_latency` - Topology refresh time
+- `submux.workerpool.queue_wait` - Queue wait time before execution
 
-**Observable Gauges (2 - planned for future enhancement):**
-- `submux.subscriptions.active` - Current subscriptions
-- `submux.connections.active` - Current connections
+**Observable Gauges (2 - worker pool implemented, others planned):**
+- ✅ `submux.workerpool.queue_depth` - Current tasks in queue
+- ✅ `submux.workerpool.queue_capacity` - Maximum queue capacity
+- ⏳ `submux.subscriptions.active` - Current subscriptions (planned)
+- ⏳ `submux.connections.active` - Current connections (planned)
