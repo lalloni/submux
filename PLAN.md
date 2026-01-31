@@ -64,8 +64,8 @@ We have successfully completed all 11 phases of the original implementation plan
 - **Resilience**: Connection failure detection and automatic signaling.
 
 ### Phase 10: Testing Strategy (✅ Complete)
-- **Unit Tests**: ~35% coverage of core logic (Hashslot, Pool, State).
-- **Integration Tests**: ~60% coverage with local 9-node Redis Cluster.
+- **Unit Tests**: ~66% coverage of core logic (Hashslot, Pool, State, Config, WorkerPool, Subscription).
+- **Integration Tests**: Additional coverage with local 9-node Redis Cluster.
     - Verified: Topology changes, concurrency, load, and failover.
 - **Infrastructure**: Event-driven test harness (no `time.Sleep`).
 - **Benchmarks**: Validated performance of critical paths.
@@ -83,12 +83,13 @@ We have successfully completed all 11 phases of the original implementation plan
 ### Status: ✅ Comprehensive
 
 **1. Unit Tests (`*_test.go`)**
-- ~35% Code Coverage (Logic layer).
-- Covers: Hashslot math, Pool lifecycle, Subscription states.
+- ~66% Code Coverage (Logic layer).
+- Covers: Hashslot, Pool lifecycle, Subscription states, Config options, WorkerPool, Topology selection, Edge cases.
+- 75 test functions across 8 test files.
 - Mock-based testing via `testutil`.
 
 **2. Integration Tests (`integration/`)**
-- ~60% Combined Coverage.
+- Additional coverage with real Redis Cluster.
 - **Infrastructure**: Spawns local 9-node Redis Clusters (3 master + 6 replicas) on random ports.
 - **Scenarios**:
     - `topology_test.go`: Verifies migration, failover handling, and MOVED/ASK detection.

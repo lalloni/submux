@@ -10,6 +10,31 @@ Alternatively, re-subscription could be determined by the callback function when
 
 # Completed
 
+## ✅ Improve test coverage to ~66%
+
+**Status:** Completed - Unit test coverage improved from 59.9% to 66.0%
+
+**Implementation Summary:**
+- ✅ Config options tests: `WithMeterProvider`, `WithCallbackWorkers`, `WithCallbackQueueSize`
+- ✅ Worker pool tests: `SubmitWithContext` with context cancellation and queue scenarios
+- ✅ Subscription state machine: `waitForActive`, concurrent state transitions, multiple waiters
+- ✅ Pool management: `addSubscriptionAndCheckFirst` atomicity, `sendCommand` error paths
+- ✅ Topology selection: `selectNodeForHashslot` with all `NodePreference` values
+- ✅ Edge cases: nil guards, empty collections, state machine transitions, context races
+- ✅ All tests pass with `-race` flag
+
+**Files Modified:**
+- `config_test.go` - Config option boundary tests
+- `workerpool_test.go` - Worker pool context handling
+- `subscription_test.go` - State machine and broadcast tests
+- `pool_test.go` - Atomic operations and error handling
+- `topology_test.go` - Node selection and migration tests
+- `eventloop_test.go` - Message handling edge cases
+- `callback_test.go` - Callback invocation edge cases
+- `submux_test.go` - Validation and closed state tests
+
+---
+
 ## ✅ Bound goroutine count
 
 **Status:** Completed - Worker pool with bounded goroutines and backpressure

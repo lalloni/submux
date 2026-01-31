@@ -513,6 +513,7 @@ func handleMessage(ctx context.Context, msg *submux.Message) {
 		}
 	}
 }
+```
 
 ## OpenTelemetry Metrics (Optional)
 

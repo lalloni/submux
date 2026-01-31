@@ -69,6 +69,18 @@ All notable changes to the submux project will be documented in this file.
 
 - **Test Coverage**: Added 18 new tests for worker pool and goroutine leak detection
 
+### Test Coverage Improvements (2026-01-31)
+- **Unit Test Coverage**: Improved from 59.9% to 66.0% (+6.1%)
+- **New Tests Added**: 75 new test functions across 8 test files (~1,845 lines)
+- **Test Categories**:
+  - Config options: `WithMeterProvider`, `WithCallbackWorkers`, `WithCallbackQueueSize` boundary tests
+  - Worker pool: `SubmitWithContext` with context cancellation, queue full, pool stop scenarios
+  - Subscription state machine: `waitForActive` method, concurrent state transitions, multiple waiters
+  - Pool management: `addSubscriptionAndCheckFirst` atomicity, `sendCommand` error handling
+  - Topology selection: `selectNodeForHashslot` with all `NodePreference` values
+  - Edge cases: nil guards, empty collections, state machine transitions, context races
+- **All Tests Pass**: With `-race` flag enabled
+
 ## [2.2.1] - 2026-01-30
 
 ### Changed
