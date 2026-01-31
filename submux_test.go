@@ -303,3 +303,163 @@ func TestSubscription_Unsubscribe(t *testing.T) {
 // Note: Tests for actual subscription functionality (SubscribeSync, PSubscribeSync, SSubscribeSync)
 // with real message delivery would require integration tests with a real Redis cluster.
 // These are covered in the integration test plan.
+
+// Unit tests for PSubscribeSync and SSubscribeSync
+
+func TestSubMux_PSubscribeSync_EmptyPattern(t *testing.T) {
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:        []string{"localhost:7000"},
+		DialTimeout:  100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	subMux, err := New(clusterClient)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	defer subMux.Close()
+
+	_, err = subMux.PSubscribeSync(context.Background(), []string{""}, func(ctx context.Context, msg *Message) {})
+	if err == nil {
+		t.Error("PSubscribeSync with empty pattern should return error")
+	}
+	if !errors.Is(err, ErrInvalidChannel) {
+		t.Errorf("PSubscribeSync with empty pattern returned error %v, want %v", err, ErrInvalidChannel)
+	}
+}
+
+func TestSubMux_SSubscribeSync_EmptyChannel(t *testing.T) {
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:        []string{"localhost:7000"},
+		DialTimeout:  100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	subMux, err := New(clusterClient)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	defer subMux.Close()
+
+	_, err = subMux.SSubscribeSync(context.Background(), []string{""}, func(ctx context.Context, msg *Message) {})
+	if err == nil {
+		t.Error("SSubscribeSync with empty channel should return error")
+	}
+	if !errors.Is(err, ErrInvalidChannel) {
+		t.Errorf("SSubscribeSync with empty channel returned error %v, want %v", err, ErrInvalidChannel)
+	}
+}
+
+func TestSubMux_SubscribeSync_EmptyChannelList(t *testing.T) {
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:        []string{"localhost:7000"},
+		DialTimeout:  100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	subMux, err := New(clusterClient)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	defer subMux.Close()
+
+	_, err = subMux.SubscribeSync(context.Background(), []string{}, func(ctx context.Context, msg *Message) {})
+	if err == nil {
+		t.Error("SubscribeSync with empty channel list should return error")
+	}
+	// Empty channel list returns ErrInvalidChannel with "channels list is empty" message
+	if !errors.Is(err, ErrInvalidChannel) {
+		t.Errorf("SubscribeSync with empty channel list returned error %v, want %v", err, ErrInvalidChannel)
+	}
+}
+
+func TestSubMux_SubscribeSync_Closed(t *testing.T) {
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:        []string{"localhost:7000"},
+		DialTimeout:  100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	subMux, err := New(clusterClient)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	// Close before subscribing
+	subMux.Close()
+
+	_, err = subMux.SubscribeSync(context.Background(), []string{"test"}, func(ctx context.Context, msg *Message) {})
+	if err == nil {
+		t.Error("SubscribeSync on closed SubMux should return error")
+	}
+	if !errors.Is(err, ErrClosed) {
+		t.Errorf("SubscribeSync on closed SubMux returned error %v, want %v", err, ErrClosed)
+	}
+}
+
+func TestSubMux_Close_Idempotent(t *testing.T) {
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:        []string{"localhost:7000"},
+		DialTimeout:  100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	subMux, err := New(clusterClient)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	// Multiple closes should not panic
+	subMux.Close()
+	subMux.Close()
+	subMux.Close()
+}
+
+func TestSubMux_Unsubscribe_ClosedSubMux(t *testing.T) {
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:        []string{"localhost:7000"},
+		DialTimeout:  100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	subMux, err := New(clusterClient)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	// Create a fake Sub manually to test unsubscribe behavior
+	sub := &Sub{
+		subMux: subMux,
+		subs: []*subscription{
+			{
+				channel:   "test-channel",
+				state:     subStateActive,
+				confirmCh: make(chan error, 1),
+			},
+		},
+	}
+
+	// Close the subMux
+	subMux.Close()
+
+	// Unsubscribe should return ErrClosed
+	err = sub.Unsubscribe(context.Background())
+	if err == nil {
+		t.Error("Unsubscribe on closed SubMux should return error")
+	}
+	if !errors.Is(err, ErrClosed) {
+		t.Errorf("Unsubscribe on closed SubMux returned error %v, want %v", err, ErrClosed)
+	}
+}

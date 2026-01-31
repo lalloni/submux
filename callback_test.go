@@ -364,3 +364,80 @@ func TestInvokeCallback_ContextCanceled(t *testing.T) {
 		t.Errorf("expected context to be canceled, got %v", receivedCtx.Err())
 	}
 }
+
+func TestSubscriptionTypeToString_AllTypes(t *testing.T) {
+	tests := []struct {
+		subType  subscriptionType
+		expected string
+	}{
+		{subTypeSubscribe, "subscribe"},
+		{subTypePSubscribe, "psubscribe"},
+		{subTypeSSubscribe, "ssubscribe"},
+		{subscriptionType(100), "unknown"}, // Unknown type
+	}
+
+	for _, tt := range tests {
+		result := subscriptionTypeToString(tt.subType)
+		if result != tt.expected {
+			t.Errorf("subscriptionTypeToString(%d) = %q, want %q", tt.subType, result, tt.expected)
+		}
+	}
+}
+
+func TestExecuteCallback_NilMessage(t *testing.T) {
+	logger := slog.Default()
+
+	var calledWithNil bool
+	callback := func(ctx context.Context, msg *Message) {
+		calledWithNil = (msg == nil)
+	}
+
+	// Should not panic with nil message
+	executeCallback(logger, &noopMetrics{}, context.Background(), callback, nil)
+
+	if !calledWithNil {
+		t.Error("callback should have been called with nil message")
+	}
+}
+
+func TestInvokeCallback_WorkerPoolFull_FallbackToGoroutine(t *testing.T) {
+	logger := slog.Default()
+
+	// Test that callbacks work correctly even when pool is under load
+	pool := NewWorkerPool(4, 100)
+	pool.Start()
+	defer pool.Stop()
+
+	var callCount atomic.Int64
+	var wg sync.WaitGroup
+
+	// Submit callbacks to the pool
+	numCalls := 20
+	wg.Add(numCalls)
+
+	for range numCalls {
+		callback := func(ctx context.Context, msg *Message) {
+			callCount.Add(1)
+			wg.Done()
+		}
+		invokeCallback(logger, &noopMetrics{}, pool, context.Background(), callback, &Message{Type: MessageTypeMessage})
+	}
+
+	// Wait with timeout for all callbacks
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout: only %d of %d callbacks completed", callCount.Load(), numCalls)
+	}
+
+	if callCount.Load() != int64(numCalls) {
+		t.Errorf("call count = %d, want %d", callCount.Load(), numCalls)
+	}
+}

@@ -3,7 +3,10 @@ package submux
 import (
 	"context"
 	"math"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -1232,6 +1235,400 @@ func TestCreatePubSubToNode_NilTopologyMonitor(t *testing.T) {
 	}
 	if err.Error() != "topology monitor not initialized" {
 		t.Errorf("error = %q, want %q", err.Error(), "topology monitor not initialized")
+	}
+}
+
+// Tests for addSubscriptionAndCheckFirst method
+
+func TestPubSubMetadata_AddSubscriptionAndCheckFirst_FirstSubscription(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	sub := &subscription{
+		channel:   "test-channel",
+		state:     subStatePending,
+		confirmCh: make(chan error, 1),
+	}
+
+	needsSubscribe, existingPending := meta.addSubscriptionAndCheckFirst(sub, "test-channel")
+
+	// First subscription should require SUBSCRIBE command
+	if !needsSubscribe {
+		t.Error("first subscription should return needsSubscribe=true")
+	}
+	if existingPending != nil {
+		t.Error("first subscription should return existingPending=nil")
+	}
+
+	// Subscription should be added to both lists
+	subs := meta.getSubscriptions("test-channel")
+	if len(subs) != 1 {
+		t.Errorf("expected 1 subscription, got %d", len(subs))
+	}
+
+	pending := meta.getPendingSubscription("test-channel")
+	if pending != sub {
+		t.Error("subscription should be in pending list")
+	}
+}
+
+func TestPubSubMetadata_AddSubscriptionAndCheckFirst_SecondWhilePending(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	// Add first subscription (this creates the pending entry)
+	sub1 := &subscription{
+		channel:   "test-channel",
+		state:     subStatePending,
+		confirmCh: make(chan error, 1),
+		doneCh:    make(chan struct{}),
+	}
+	needsSubscribe1, _ := meta.addSubscriptionAndCheckFirst(sub1, "test-channel")
+	if !needsSubscribe1 {
+		t.Fatal("first subscription should need subscribe")
+	}
+
+	// Add second subscription while first is still pending
+	sub2 := &subscription{
+		channel:   "test-channel",
+		state:     subStatePending,
+		confirmCh: make(chan error, 1),
+	}
+	needsSubscribe2, existingPending := meta.addSubscriptionAndCheckFirst(sub2, "test-channel")
+
+	// Second should NOT need subscribe, but should get existing pending
+	if needsSubscribe2 {
+		t.Error("second subscription should NOT need subscribe")
+	}
+	if existingPending != sub1 {
+		t.Error("second subscription should get existingPending=sub1")
+	}
+
+	// Both subscriptions should be in the list
+	subs := meta.getSubscriptions("test-channel")
+	if len(subs) != 2 {
+		t.Errorf("expected 2 subscriptions, got %d", len(subs))
+	}
+}
+
+func TestPubSubMetadata_AddSubscriptionAndCheckFirst_AfterActive(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	// Add first subscription and confirm it
+	sub1 := &subscription{
+		channel:   "test-channel",
+		state:     subStateActive, // Already active
+		confirmCh: make(chan error, 1),
+	}
+	meta.addSubscription(sub1)
+	// Don't add to pending - simulating already confirmed
+
+	// Add second subscription
+	sub2 := &subscription{
+		channel:   "test-channel",
+		state:     subStatePending,
+		confirmCh: make(chan error, 1),
+	}
+	needsSubscribe, existingPending := meta.addSubscriptionAndCheckFirst(sub2, "test-channel")
+
+	// Should NOT need subscribe (channel already has active subs)
+	// Should NOT have existingPending (no one is pending)
+	if needsSubscribe {
+		t.Error("should NOT need subscribe for already active channel")
+	}
+	if existingPending != nil {
+		t.Error("should NOT have existingPending when channel is already active")
+	}
+
+	// Both subscriptions should be in the list
+	subs := meta.getSubscriptions("test-channel")
+	if len(subs) != 2 {
+		t.Errorf("expected 2 subscriptions, got %d", len(subs))
+	}
+}
+
+func TestPubSubMetadata_AddSubscriptionAndCheckFirst_ConcurrentAccess(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 100),
+		done:                 make(chan struct{}),
+	}
+
+	numGoroutines := 100
+	var needsSubscribeCount int64
+	var existingPendingCount int64
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	// Start many concurrent subscriptions to the same channel
+	for i := range numGoroutines {
+		go func(idx int) {
+			defer wg.Done()
+
+			sub := &subscription{
+				channel:   "test-channel",
+				state:     subStatePending,
+				confirmCh: make(chan error, 1),
+				doneCh:    make(chan struct{}),
+			}
+
+			needsSubscribe, existingPending := meta.addSubscriptionAndCheckFirst(sub, "test-channel")
+
+			if needsSubscribe {
+				atomic.AddInt64(&needsSubscribeCount, 1)
+			}
+			if existingPending != nil {
+				atomic.AddInt64(&existingPendingCount, 1)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Exactly ONE goroutine should have needsSubscribe=true
+	if needsSubscribeCount != 1 {
+		t.Errorf("expected exactly 1 goroutine with needsSubscribe=true, got %d", needsSubscribeCount)
+	}
+
+	// All others should either have existingPending or be after the first was confirmed
+	// (In this test, they all get existingPending since we don't remove from pending)
+	expectedPendingCount := int64(numGoroutines - 1)
+	if existingPendingCount != expectedPendingCount {
+		t.Errorf("expected %d goroutines with existingPending, got %d", expectedPendingCount, existingPendingCount)
+	}
+
+	// All subscriptions should be registered
+	subs := meta.getSubscriptions("test-channel")
+	if len(subs) != numGoroutines {
+		t.Errorf("expected %d subscriptions, got %d", numGoroutines, len(subs))
+	}
+}
+
+// Tests for edge cases in pool management
+
+func TestPubSubMetadata_SendCommand_ClosedDoneChannel(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command), // Unbuffered - will block on send
+		done:                 make(chan struct{}),
+		logger:               defaultConfig().logger,
+	}
+
+	// Close the done channel first
+	close(meta.done)
+
+	cmd := &command{
+		cmd:      cmdSubscribe,
+		args:     []any{"test-channel"},
+		response: make(chan error, 1),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// With unbuffered cmdCh and closed done, should return "pubsub closed" error
+	err := meta.sendCommand(ctx, cmd)
+	if err == nil {
+		t.Error("sendCommand should return error when done channel is closed")
+	}
+	// Error could be either context timeout or pubsub closed (race between select cases)
+}
+
+func TestPubSubMetadata_SendCommand_ContextTimeout(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command), // Unbuffered - will block
+		done:                 make(chan struct{}),
+		logger:               defaultConfig().logger,
+	}
+
+	cmd := &command{
+		cmd:      cmdSubscribe,
+		args:     []any{"test-channel"},
+		response: make(chan error, 1),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := meta.sendCommand(ctx, cmd)
+	if err != context.DeadlineExceeded {
+		t.Errorf("sendCommand should return context.DeadlineExceeded, got %v", err)
+	}
+}
+
+func TestPubSubMetadata_StateTransitions(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	// Test state transitions
+	if meta.getState() != connStateActive {
+		t.Error("initial state should be Active")
+	}
+
+	meta.setState(connStateFailed)
+	if meta.getState() != connStateFailed {
+		t.Error("state should be Failed")
+	}
+
+	meta.setState(connStateClosed)
+	if meta.getState() != connStateClosed {
+		t.Error("state should be Closed")
+	}
+}
+
+func TestPubSubMetadata_GetAllSubscriptions_Empty(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+	}
+
+	subs := meta.getAllSubscriptions()
+	if len(subs) != 0 {
+		t.Errorf("expected 0 subscriptions, got %d", len(subs))
+	}
+}
+
+func TestPubSubMetadata_GetAllSubscriptions_Multiple(t *testing.T) {
+	sub1 := &subscription{channel: "ch1"}
+	sub2 := &subscription{channel: "ch2"}
+	sub3 := &subscription{channel: "ch1"} // Same channel as sub1
+
+	meta := &pubSubMetadata{
+		subscriptions: map[string][]*subscription{
+			"ch1": {sub1, sub3},
+			"ch2": {sub2},
+		},
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+	}
+
+	subs := meta.getAllSubscriptions()
+	if len(subs) != 3 {
+		t.Errorf("expected 3 subscriptions, got %d", len(subs))
+	}
+}
+
+func TestPubSubMetadata_RemoveSubscription_NotFound(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+	}
+
+	sub := &subscription{channel: "ch1"}
+
+	// Should not panic when subscription is not found
+	meta.removeSubscription(sub)
+}
+
+func TestPubSubMetadata_RemoveSubscription_EmptyAfterRemoval(t *testing.T) {
+	sub := &subscription{channel: "ch1"}
+
+	meta := &pubSubMetadata{
+		subscriptions: map[string][]*subscription{
+			"ch1": {sub},
+		},
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+	}
+
+	meta.removeSubscription(sub)
+
+	// Channel entry should be removed entirely
+	if _, ok := meta.subscriptions["ch1"]; ok {
+		t.Error("empty channel subscription list should be removed")
+	}
+}
+
+func TestPool_HashslotInvalidation(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	// Add a mock hashslot mapping
+	pubsub := &redis.PubSub{}
+	pool.mu.Lock()
+	pool.hashslotPubSubs[100] = []*redis.PubSub{pubsub}
+	pool.mu.Unlock()
+
+	// Invalidate
+	pool.invalidateHashslot(100)
+
+	// Verify removed
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+	if _, ok := pool.hashslotPubSubs[100]; ok {
+		t.Error("hashslot should be invalidated")
+	}
+}
+
+func TestPool_HashslotInvalidation_NotExists(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	// Should not panic when hashslot doesn't exist
+	pool.invalidateHashslot(999)
+}
+
+func TestPubSubMetadata_AddSubscriptionAndCheckFirst_DifferentChannels(t *testing.T) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+	}
+
+	// Subscribe to two different channels
+	sub1 := &subscription{
+		channel:   "channel-1",
+		state:     subStatePending,
+		confirmCh: make(chan error, 1),
+	}
+	sub2 := &subscription{
+		channel:   "channel-2",
+		state:     subStatePending,
+		confirmCh: make(chan error, 1),
+	}
+
+	needsSubscribe1, _ := meta.addSubscriptionAndCheckFirst(sub1, "channel-1")
+	needsSubscribe2, _ := meta.addSubscriptionAndCheckFirst(sub2, "channel-2")
+
+	// Both should need subscribe (different channels)
+	if !needsSubscribe1 {
+		t.Error("channel-1 should need subscribe")
+	}
+	if !needsSubscribe2 {
+		t.Error("channel-2 should need subscribe")
 	}
 }
 

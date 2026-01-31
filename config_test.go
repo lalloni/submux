@@ -275,3 +275,126 @@ func TestOptionOverwrite(t *testing.T) {
 		t.Errorf("Last option should win: minConnectionsPerNode = %d, want 10", cfg.minConnectionsPerNode)
 	}
 }
+
+func TestWithMeterProvider(t *testing.T) {
+	tests := []struct {
+		name           string
+		provider       func() any
+		expectNil      bool
+	}{
+		{
+			name:      "nil provider",
+			provider:  func() any { return nil },
+			expectNil: true,
+		},
+		// Note: We can't easily test with a real MeterProvider without importing
+		// the full OTel SDK, but we verify the option function works correctly
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := defaultConfig()
+
+			// nil provider should be allowed (disables metrics)
+			WithMeterProvider(nil)(cfg)
+			if cfg.meterProvider != nil {
+				t.Error("nil provider should be stored as nil")
+			}
+		})
+	}
+}
+
+func TestWithCallbackWorkers(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    int
+		expected int
+	}{
+		{"positive value", 8, 8},
+		{"value of 1", 1, 1},
+		{"zero clamped to 1", 0, 1},
+		{"negative clamped to 1", -5, 1},
+		{"large negative clamped to 1", -1000, 1},
+		{"large positive value", 100, 100},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := defaultConfig()
+			WithCallbackWorkers(tt.input)(cfg)
+
+			if cfg.callbackWorkers != tt.expected {
+				t.Errorf("callbackWorkers = %d, want %d", cfg.callbackWorkers, tt.expected)
+			}
+		})
+	}
+}
+
+func TestWithCallbackQueueSize(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    int
+		expected int
+	}{
+		{"positive value", 5000, 5000},
+		{"value of 1", 1, 1},
+		{"zero clamped to 1", 0, 1},
+		{"negative clamped to 1", -100, 1},
+		{"large negative clamped to 1", -10000, 1},
+		{"large positive value", 100000, 100000},
+		{"default equivalent", 10000, 10000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := defaultConfig()
+			WithCallbackQueueSize(tt.input)(cfg)
+
+			if cfg.callbackQueueSize != tt.expected {
+				t.Errorf("callbackQueueSize = %d, want %d", cfg.callbackQueueSize, tt.expected)
+			}
+		})
+	}
+}
+
+func TestWithCallbackWorkers_Integration(t *testing.T) {
+	// Test that config options work together correctly
+	cfg := defaultConfig()
+
+	WithCallbackWorkers(16)(cfg)
+	WithCallbackQueueSize(20000)(cfg)
+
+	if cfg.callbackWorkers != 16 {
+		t.Errorf("callbackWorkers = %d, want 16", cfg.callbackWorkers)
+	}
+	if cfg.callbackQueueSize != 20000 {
+		t.Errorf("callbackQueueSize = %d, want 20000", cfg.callbackQueueSize)
+	}
+}
+
+// Edge case: Test configuration validation relationships
+func TestConfig_ZeroTopologyPollInterval(t *testing.T) {
+	cfg := defaultConfig()
+	WithTopologyPollInterval(0)(cfg)
+
+	// Should be clamped to minimum (100ms)
+	if cfg.topologyPollInterval != 100*time.Millisecond {
+		t.Errorf("zero poll interval should be clamped to 100ms, got %v", cfg.topologyPollInterval)
+	}
+}
+
+func TestConfig_NegativeWorkerValues(t *testing.T) {
+	cfg := defaultConfig()
+
+	// Apply negative values
+	WithCallbackWorkers(-10)(cfg)
+	WithCallbackQueueSize(-500)(cfg)
+
+	// Both should be clamped to 1
+	if cfg.callbackWorkers != 1 {
+		t.Errorf("negative callbackWorkers should be clamped to 1, got %d", cfg.callbackWorkers)
+	}
+	if cfg.callbackQueueSize != 1 {
+		t.Errorf("negative callbackQueueSize should be clamped to 1, got %d", cfg.callbackQueueSize)
+	}
+}

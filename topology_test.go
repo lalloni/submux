@@ -1087,6 +1087,158 @@ func TestResubscribeOnNewNodeWithMonitoring_EmptySubscriptions(t *testing.T) {
 // Note: These tests verify empty subscription handling.
 // Full resubscription testing requires a real cluster client (covered by integration tests).
 
+// Tests for selectNodeForHashslot method
+
+func TestTopologyState_SelectNodeForHashslot_PreferMasters(t *testing.T) {
+	ts := newTopologyState()
+	ts.hashslotToNodes[100] = []string{"master:7000", "replica1:7001", "replica2:7002"}
+
+	node, ok := ts.selectNodeForHashslot(100, PreferMasters)
+	if !ok {
+		t.Error("expected ok=true")
+	}
+	if node != "master:7000" {
+		t.Errorf("PreferMasters should return master, got %q", node)
+	}
+}
+
+func TestTopologyState_SelectNodeForHashslot_PreferReplicas(t *testing.T) {
+	ts := newTopologyState()
+	ts.hashslotToNodes[100] = []string{"master:7000", "replica1:7001", "replica2:7002"}
+
+	node, ok := ts.selectNodeForHashslot(100, PreferReplicas)
+	if !ok {
+		t.Error("expected ok=true")
+	}
+	if node != "replica1:7001" {
+		t.Errorf("PreferReplicas should return first replica, got %q", node)
+	}
+}
+
+func TestTopologyState_SelectNodeForHashslot_PreferReplicas_NoReplicas(t *testing.T) {
+	ts := newTopologyState()
+	ts.hashslotToNodes[100] = []string{"master:7000"} // Only master, no replicas
+
+	node, ok := ts.selectNodeForHashslot(100, PreferReplicas)
+	if !ok {
+		t.Error("expected ok=true")
+	}
+	// Should fall back to master when no replicas
+	if node != "master:7000" {
+		t.Errorf("PreferReplicas should fall back to master when no replicas, got %q", node)
+	}
+}
+
+func TestTopologyState_SelectNodeForHashslot_BalancedAll(t *testing.T) {
+	ts := newTopologyState()
+	ts.hashslotToNodes[100] = []string{"master:7000", "replica1:7001", "replica2:7002"}
+
+	node, ok := ts.selectNodeForHashslot(100, BalancedAll)
+	if !ok {
+		t.Error("expected ok=true")
+	}
+	// BalancedAll returns master as default (caller handles actual balancing)
+	if node != "master:7000" {
+		t.Errorf("BalancedAll should return master as default, got %q", node)
+	}
+}
+
+func TestTopologyState_SelectNodeForHashslot_InvalidPreference(t *testing.T) {
+	ts := newTopologyState()
+	ts.hashslotToNodes[100] = []string{"master:7000", "replica1:7001"}
+
+	// Invalid preference value should default to master
+	node, ok := ts.selectNodeForHashslot(100, NodePreference(999))
+	if !ok {
+		t.Error("expected ok=true")
+	}
+	if node != "master:7000" {
+		t.Errorf("invalid preference should default to master, got %q", node)
+	}
+}
+
+func TestTopologyState_SelectNodeForHashslot_EmptyNodes(t *testing.T) {
+	ts := newTopologyState()
+	ts.hashslotToNodes[100] = []string{} // Empty nodes list
+
+	node, ok := ts.selectNodeForHashslot(100, PreferMasters)
+	if ok {
+		t.Error("expected ok=false for empty nodes")
+	}
+	if node != "" {
+		t.Errorf("expected empty node, got %q", node)
+	}
+}
+
+func TestTopologyState_SelectNodeForHashslot_HashslotNotFound(t *testing.T) {
+	ts := newTopologyState()
+	// hashslot 100 not added
+
+	node, ok := ts.selectNodeForHashslot(100, PreferMasters)
+	if ok {
+		t.Error("expected ok=false for non-existent hashslot")
+	}
+	if node != "" {
+		t.Errorf("expected empty node, got %q", node)
+	}
+}
+
+func TestTopologyState_SelectNodeForHashslot_AllPreferences(t *testing.T) {
+	tests := []struct {
+		name       string
+		nodes      []string
+		preference NodePreference
+		expected   string
+	}{
+		{"PreferMasters single", []string{"m:7000"}, PreferMasters, "m:7000"},
+		{"PreferMasters multi", []string{"m:7000", "r:7001"}, PreferMasters, "m:7000"},
+		{"PreferReplicas single", []string{"m:7000"}, PreferReplicas, "m:7000"},
+		{"PreferReplicas multi", []string{"m:7000", "r:7001"}, PreferReplicas, "r:7001"},
+		{"BalancedAll single", []string{"m:7000"}, BalancedAll, "m:7000"},
+		{"BalancedAll multi", []string{"m:7000", "r:7001"}, BalancedAll, "m:7000"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := newTopologyState()
+			ts.hashslotToNodes[100] = tt.nodes
+
+			node, ok := ts.selectNodeForHashslot(100, tt.preference)
+			if !ok {
+				t.Error("expected ok=true")
+			}
+			if node != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, node)
+			}
+		})
+	}
+}
+
+// Tests for getNodesForHashslot
+
+func TestTopologyState_GetNodesForHashslot_ReturnsCopy(t *testing.T) {
+	ts := newTopologyState()
+	originalNodes := []string{"m:7000", "r:7001", "r:7002"}
+	ts.hashslotToNodes[100] = originalNodes
+
+	nodes, ok := ts.getNodesForHashslot(100)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+
+	// Modify the returned slice
+	nodes[0] = "modified"
+
+	// Original should be unchanged
+	if ts.hashslotToNodes[100][0] == "modified" {
+		t.Error("getNodesForHashslot should return a copy, not the original slice")
+	}
+}
+
+// Tests for triggerRefresh non-blocking behavior
+// Note: Full triggerRefresh testing requires a real cluster client.
+// The non-blocking nature is verified by integration tests.
+
 func TestResubscribeOnNewNode_EmptySubscriptions(t *testing.T) {
 	cfg := defaultConfig()
 	pool := newPubSubPool(nil, cfg)
@@ -1110,4 +1262,205 @@ func TestResubscribeOnNewNode_EmptySubscriptions(t *testing.T) {
 	// Should not panic with empty subscriptions
 	tm.resubscribeOnNewNode(nil, migration, &counter, &wg)
 	tm.resubscribeOnNewNode([]*subscription{}, migration, &counter, &wg)
+}
+
+// Additional topology edge case tests
+
+func TestTopologyState_SingleHashslotRange(t *testing.T) {
+	ts := newTopologyState()
+
+	// Single hashslot range where Start == End
+	slots := []redis.ClusterSlot{
+		{Start: 100, End: 100, Nodes: []redis.ClusterNode{{Addr: "node1:7000"}}},
+	}
+
+	ts.update(slots)
+
+	// Should have exactly 1 slot
+	if len(ts.hashslotToNode) != 1 {
+		t.Errorf("expected 1 hashslot, got %d", len(ts.hashslotToNode))
+	}
+
+	node, ok := ts.getNodeForHashslot(100)
+	if !ok || node != "node1:7000" {
+		t.Errorf("hashslot 100 = %q, %v, want node1:7000, true", node, ok)
+	}
+}
+
+func TestTopologyState_Update_ReplicaInfo(t *testing.T) {
+	ts := newTopologyState()
+
+	// Slot with master and 2 replicas
+	slots := []redis.ClusterSlot{
+		{
+			Start: 0,
+			End:   5460,
+			Nodes: []redis.ClusterNode{
+				{Addr: "master:7000"},
+				{Addr: "replica1:7001"},
+				{Addr: "replica2:7002"},
+			},
+		},
+	}
+
+	ts.update(slots)
+
+	// getNodesForHashslot should return all nodes
+	nodes, ok := ts.getNodesForHashslot(1000)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if len(nodes) != 3 {
+		t.Errorf("expected 3 nodes, got %d", len(nodes))
+	}
+	if nodes[0] != "master:7000" {
+		t.Errorf("first node should be master, got %q", nodes[0])
+	}
+}
+
+func TestTopologyMonitor_GetNodesForHashslot_NilState(t *testing.T) {
+	cfg := defaultConfig()
+	tm := &topologyMonitor{
+		config:       cfg,
+		currentState: nil,
+		done:         make(chan struct{}),
+	}
+
+	nodes, ok := tm.getNodesForHashslot(100)
+	if ok {
+		t.Error("expected ok=false with nil state")
+	}
+	if nodes != nil {
+		t.Errorf("expected nil nodes, got %v", nodes)
+	}
+}
+
+func TestFindAffectedSubscriptions_MultipleHashslots(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	sub1 := &subscription{channel: "ch1", hashslot: 100}
+	sub2 := &subscription{channel: "ch2", hashslot: 200}
+	sub3 := &subscription{channel: "ch3", hashslot: 100}
+	sub4 := &subscription{channel: "ch4", hashslot: 100}
+
+	sm := &SubMux{
+		pool: pool,
+		subscriptions: map[string][]*subscription{
+			"ch1": {sub1},
+			"ch2": {sub2},
+			"ch3": {sub3},
+			"ch4": {sub4},
+		},
+	}
+
+	tm := &topologyMonitor{
+		config: cfg,
+		subMux: sm,
+	}
+
+	// Find subscriptions for hashslot 100
+	affected := tm.findAffectedSubscriptions(100)
+	if len(affected) != 3 {
+		t.Errorf("expected 3 affected subscriptions, got %d", len(affected))
+	}
+
+	// Find subscriptions for hashslot 200
+	affected = tm.findAffectedSubscriptions(200)
+	if len(affected) != 1 {
+		t.Errorf("expected 1 affected subscription, got %d", len(affected))
+	}
+
+	// Find subscriptions for non-existent hashslot
+	affected = tm.findAffectedSubscriptions(999)
+	if len(affected) != 0 {
+		t.Errorf("expected 0 affected subscriptions, got %d", len(affected))
+	}
+}
+
+func TestHandleMigration_HashslotInvalidation(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.autoResubscribe = false // Disable auto-resubscribe for this test
+	pool := newPubSubPool(nil, cfg)
+
+	// Set up a hashslot mapping
+	pubsub := &redis.PubSub{}
+	pool.mu.Lock()
+	pool.hashslotPubSubs[100] = []*redis.PubSub{pubsub}
+	pool.mu.Unlock()
+
+	sm := &SubMux{
+		pool:          pool,
+		subscriptions: make(map[string][]*subscription),
+	}
+
+	tm := &topologyMonitor{
+		config: cfg,
+		subMux: sm,
+		done:   make(chan struct{}),
+	}
+
+	migration := hashslotMigration{hashslot: 100, oldNode: "node1:7000", newNode: "node2:7000"}
+
+	// Handle migration (no subscriptions affected)
+	tm.handleMigration(migration)
+
+	// Verify hashslot was invalidated
+	pool.mu.RLock()
+	_, exists := pool.hashslotPubSubs[100]
+	pool.mu.RUnlock()
+
+	if exists {
+		t.Error("hashslot should be invalidated after migration")
+	}
+}
+
+func TestResubscribeOnNewNodeWithMonitoring_QuickCompletion(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.migrationTimeout = 5 * time.Second
+	cfg.migrationStallCheck = 1 * time.Second
+	pool := newPubSubPool(nil, cfg)
+
+	sm := &SubMux{
+		pool:          pool,
+		subscriptions: make(map[string][]*subscription),
+	}
+
+	tm := &topologyMonitor{
+		config: cfg,
+		subMux: sm,
+		done:   make(chan struct{}),
+	}
+
+	migration := hashslotMigration{hashslot: 100, oldNode: "node1:7000", newNode: "node2:7000"}
+
+	// With empty subscriptions, should complete very quickly
+	start := time.Now()
+	tm.resubscribeOnNewNodeWithMonitoring(nil, migration)
+	elapsed := time.Since(start)
+
+	// Should complete in under 100ms (not waiting for timeouts)
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("empty subscription resubscription took %v, expected < 100ms", elapsed)
+	}
+}
+
+func TestTopologyState_GetAnySlotForNode_ReturnsConsistently(t *testing.T) {
+	ts := newTopologyState()
+	ts.nodeToHashslots["node1:7000"] = []int{100, 200, 300}
+
+	// Should always return the first slot (index 0)
+	slot, ok := ts.getAnySlotForNode("node1:7000")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if slot != 100 {
+		t.Errorf("expected first slot (100), got %d", slot)
+	}
+
+	// Call again to verify consistency
+	slot2, _ := ts.getAnySlotForNode("node1:7000")
+	if slot != slot2 {
+		t.Errorf("inconsistent slot returned: %d vs %d", slot, slot2)
+	}
 }

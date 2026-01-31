@@ -1053,3 +1053,104 @@ func TestSendRedisCommand_RedirectDetection(t *testing.T) {
 		t.Error("redirect callback should not be called for non-redirect errors")
 	}
 }
+
+// Additional edge case tests
+
+func TestProcessResponse_NilMessage(t *testing.T) {
+	meta := newTestMetadata()
+
+	// nil message should result in error (unexpected type)
+	err := processResponse(meta, nil)
+	if err == nil {
+		t.Error("expected error for nil message")
+	}
+}
+
+func TestHandleMessageFromPubSub_EmptyPayload(t *testing.T) {
+	meta := newTestMetadata()
+
+	var receivedPayload string
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	callback := func(ctx context.Context, msg *Message) {
+		receivedPayload = msg.Payload
+		wg.Done()
+	}
+
+	sub := &subscription{
+		channel:  "ch1",
+		callback: callback,
+		subType:  subTypeSubscribe,
+	}
+	meta.subscriptions["ch1"] = []*subscription{sub}
+
+	// Empty payload should be handled correctly
+	err := handleMessageFromPubSub(meta, "ch1", "")
+
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	wg.Wait()
+
+	if receivedPayload != "" {
+		t.Errorf("expected empty payload, got %q", receivedPayload)
+	}
+}
+
+func TestNotifySubscriptionsOfFailure_EmptySubscriptions(t *testing.T) {
+	meta := newTestMetadata()
+	// No subscriptions
+
+	// Should not panic
+	notifySubscriptionsOfFailure(meta, errors.New("test error"))
+}
+
+func TestNotifySubscriptionsOfFailure_NilCallback(t *testing.T) {
+	meta := newTestMetadata()
+
+	// Add subscription with nil callback
+	sub := &subscription{
+		channel:  "ch1",
+		callback: nil,
+		subType:  subTypeSubscribe,
+		state:    subStateActive,
+	}
+	meta.subscriptions["ch1"] = []*subscription{sub}
+
+	// Should not panic
+	notifySubscriptionsOfFailure(meta, errors.New("test error"))
+
+	// Verify state was updated to failed
+	if sub.getState() != subStateFailed {
+		t.Errorf("state = %v, want %v", sub.getState(), subStateFailed)
+	}
+}
+
+func TestHandleSubscriptionConfirmation_AllUnsubscribeKinds(t *testing.T) {
+	tests := []struct {
+		kind string
+	}{
+		{"unsubscribe"},
+		{"punsubscribe"},
+		{"sunsubscribe"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.kind, func(t *testing.T) {
+			meta := newTestMetadata()
+
+			subMsg := &redis.Subscription{
+				Kind:    tt.kind,
+				Channel: "ch1",
+				Count:   0,
+			}
+
+			err := handleSubscriptionConfirmation(meta, subMsg)
+			if err != nil {
+				t.Errorf("unexpected error for %s: %v", tt.kind, err)
+			}
+		})
+	}
+}
