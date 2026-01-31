@@ -2,6 +2,73 @@
 
 All notable changes to the submux project will be documented in this file.
 
+## [3.0.0] - 2026-01-30
+
+### Added
+- **Bounded Worker Pool**: Callbacks are now executed through a bounded worker pool that prevents goroutine explosion under high message throughput.
+  - Configurable via `WithCallbackWorkers(n)` (default: `runtime.NumCPU() * 2`)
+  - Configurable via `WithCallbackQueueSize(n)` (default: `10000`)
+  - Provides backpressure when queue is full
+  - New metrics: `submux.workerpool.submissions` and `submux.workerpool.queue_wait`
+
+- **Worker Pool Telemetry**: Added comprehensive observability metrics for monitoring worker pool health and detecting saturation.
+  - `submux.workerpool.submissions` - Counter tracking callback submissions with `blocked` attribute (true = queue was full, had to wait)
+  - `submux.workerpool.dropped` - Counter tracking callbacks dropped because worker pool was stopped
+  - `submux.workerpool.queue_wait` - Histogram of queue wait latency in milliseconds (time from submission to worker pickup)
+  - `submux.workerpool.queue_depth` - Observable gauge showing current number of tasks waiting in queue
+  - `submux.workerpool.queue_capacity` - Observable gauge showing maximum queue capacity
+
+- **Lock Ordering Documentation**: Added section 2.4 to DESIGN.md documenting the lock acquisition order to prevent deadlocks.
+
+- **Redis Kind Constants**: Added internal constants for Redis subscription message kinds (`redisKindSubscribe`, etc.) to prevent typos.
+
+### Changed
+- **BREAKING: MessageCallback Signature**: Changed from `func(msg *Message)` to `func(ctx context.Context, msg *Message)`.
+  - The context is derived from SubMux lifecycle and is canceled when `Close()` is called
+  - Allows callbacks to detect shutdown and perform graceful cleanup
+  - All existing callbacks must be updated to accept the context parameter
+
+- **Subscription Tracking**: Subscriptions are always tracked in the global map for signal delivery.
+  - Signal messages (migration, node_failure, etc.) are sent regardless of auto-resubscribe setting
+  - The `WithAutoResubscribe` flag only controls automatic resubscription after migrations, not signal delivery
+
+### Fixed
+- **Race Condition in Pool**: Fixed race condition in `selectLeastLoadedAcrossNodes` where multiple goroutines could create duplicate connections to the same node.
+  - Implemented pending connections map with double-check pattern
+  - Goroutines now wait for in-flight connection creation instead of creating duplicates
+
+- **Race Condition in getSubscriptions**: Fixed race condition in `pubSubMetadata.getSubscriptions()` where returning a direct slice reference could cause data races during concurrent unsubscribe operations.
+  - Now returns a copy of the subscription slice to prevent concurrent modification issues
+
+- **Duplicate Code Cleanup**: Extracted repeated subscription cleanup logic into `removeSubscriptionFromMap()` and `removeSubscriptionFromMapLocked()` helper methods.
+
+- **Concurrent Subscription Race Condition**: Fixed race condition where multiple goroutines subscribing to the same channel could all think they were first, causing only one to get confirmed.
+  - Added `addSubscriptionAndCheckFirst()` method for atomic first-subscriber detection
+  - Added `doneCh` broadcast channel and `waitForActive()` method for multi-waiter confirmation
+  - Added `doneChClosed` flag to prevent panic from closing already-closed channel
+
+- **Nil Pointer in Topology Monitor**: Fixed nil pointer dereferences in signal sending functions when `tm.subMux` is nil during tests.
+  - Added nil checks in `sendSignalMessages`, `sendMigrationTimeoutSignal`, `sendMigrationStalledSignal`
+
+### Technical Details
+- **New Files**:
+  - `workerpool.go` - Bounded worker pool implementation
+  - `workerpool_test.go` - Worker pool unit tests
+  - `goroutine_test.go` - Goroutine leak detection tests
+
+- **Modified Files**:
+  - `callback.go` - Integrated worker pool for callback execution
+  - `submux.go` - Worker pool lifecycle management, subscription tracking optimization
+  - `pool.go` - Race condition fix with pending connections, atomic first-subscriber detection
+  - `subscription.go` - Broadcast confirmation channel (`doneCh`), `waitForActive()` method, `doneChClosed` flag
+  - `config.go` - New worker pool configuration options
+  - `types.go` - Updated MessageCallback signature
+  - `eventloop.go` - Pass worker pool and context to callbacks
+  - `topology.go` - Pass worker pool and context to signal callbacks, nil pointer fixes
+  - `metrics.go`, `metrics_otel.go` - Worker pool metrics
+
+- **Test Coverage**: Added 18 new tests for worker pool and goroutine leak detection
+
 ## [2.2.1] - 2026-01-30
 
 ### Changed
