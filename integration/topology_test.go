@@ -68,25 +68,29 @@ func TestHashslotMigration(t *testing.T) {
 		t.Fatal("Could not find a different target node for migration")
 	}
 
-	// Publish a message before migration to verify connectivity
+	// Publish a message before migration to verify connectivity (with retry for cluster stabilization)
 	pubClient := cluster.GetClusterClient()
-	err = pubClient.SPublish(context.Background(), channelName, "before-migration").Err()
-	if err != nil {
-		t.Logf("SPublish failed: %v, trying Publish", err)
-		err = pubClient.Publish(context.Background(), channelName, "before-migration").Err()
-	}
-	if err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
-
-	// Wait for message
-	select {
-	case msg := <-messages:
-		if msg.Payload != "before-migration" {
-			t.Errorf("Expected 'before-migration', got %q", msg.Payload)
+	err = retryWithBackoff(t, 3, 100*time.Millisecond, func() error {
+		pubErr := pubClient.SPublish(context.Background(), channelName, "before-migration").Err()
+		if pubErr != nil {
+			pubErr = pubClient.Publish(context.Background(), channelName, "before-migration").Err()
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Timeout waiting for message before migration")
+		if pubErr != nil {
+			return fmt.Errorf("publish failed: %w", pubErr)
+		}
+
+		select {
+		case msg := <-messages:
+			if msg.Payload != "before-migration" {
+				return fmt.Errorf("expected 'before-migration', got %q", msg.Payload)
+			}
+			return nil
+		case <-time.After(2 * time.Second):
+			return fmt.Errorf("timeout waiting for message before migration")
+		}
+	})
+	if err != nil {
+		t.Fatalf("Failed initial connectivity check: %v", err)
 	}
 
 	// Perform actual migration
@@ -153,22 +157,28 @@ func TestAutoResubscribe(t *testing.T) {
 		}
 	}
 
-	// Verify initial connectivity
-	err = client.SPublish(context.Background(), channelName, "initial").Err()
-	if err != nil {
-		err = client.Publish(context.Background(), channelName, "initial").Err()
-	}
-	if err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
-
-	select {
-	case msg := <-messages:
-		if msg.Payload != "initial" {
-			t.Errorf("Expected 'initial', got %q", msg.Payload)
+	// Verify initial connectivity with retry (cluster may need time to stabilize)
+	err = retryWithBackoff(t, 3, 100*time.Millisecond, func() error {
+		pubErr := client.SPublish(context.Background(), channelName, "initial").Err()
+		if pubErr != nil {
+			pubErr = client.Publish(context.Background(), channelName, "initial").Err()
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Timeout waiting for initial message")
+		if pubErr != nil {
+			return fmt.Errorf("publish failed: %w", pubErr)
+		}
+
+		select {
+		case msg := <-messages:
+			if msg.Payload != "initial" {
+				return fmt.Errorf("expected 'initial', got %q", msg.Payload)
+			}
+			return nil
+		case <-time.After(2 * time.Second):
+			return fmt.Errorf("timeout waiting for initial message")
+		}
+	})
+	if err != nil {
+		t.Fatalf("Failed initial connectivity check: %v", err)
 	}
 
 	// Migrate
