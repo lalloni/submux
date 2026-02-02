@@ -66,13 +66,169 @@ Integration tests should use **explicit precondition checks** rather than retryi
 
 ### Available Helpers
 
-| Helper | Purpose | Checks |
-|--------|---------|--------|
-| `waitForClusterHealthy(client, timeout)` | Ensures cluster is operational | `cluster_state:ok`, all 16384 slots assigned, no failed slots |
-| `waitForReplicasReady(client, requiredPerMaster, timeout)` | Ensures replication is available | All masters have N connected replicas |
-| `WaitForSlotConvergence(cluster, slot, expectedOwner, timeout)` | Ensures consistent slot routing | All nodes agree on slot owner |
+#### waitForClusterHealthy
 
-### Usage Pattern
+Ensures cluster is fully operational before starting tests.
+
+```go
+func TestMyFeature(t *testing.T) {
+    tc := setupTestCluster(t)
+    defer tc.Cleanup()
+
+    // Wait for cluster to be healthy before proceeding
+    waitForClusterHealthy(t, tc.Client(), 10*time.Second)
+
+    // Now safe to create subscriptions
+    sm, err := submux.New(tc.Client())
+    require.NoError(t, err)
+    defer sm.Close()
+
+    // Test logic here...
+}
+```
+
+**Checks performed:**
+- `cluster_state:ok` (cluster is operational)
+- All 16384 slots are assigned
+- No slots in `fail` state
+- All nodes are reachable
+
+**When to use:** At the start of every integration test, before creating SubMux instance.
+
+---
+
+#### waitForReplicasReady
+
+Ensures all master nodes have required number of replicas synchronized.
+
+```go
+func TestFailover(t *testing.T) {
+    tc := setupTestCluster(t)
+    defer tc.Cleanup()
+
+    waitForClusterHealthy(t, tc.Client(), 10*time.Second)
+
+    // For failover tests, ensure replicas are ready
+    waitForReplicasReady(t, tc.Client(), 1, 10*time.Second)
+
+    // Now safe to test failover scenarios
+}
+```
+
+**Checks performed:**
+- All master nodes have at least N replicas
+- All replicas are in `connected` state
+- Replication lag is acceptable
+
+**When to use:** Before tests that rely on replica promotion (failover, node shutdown tests).
+
+---
+
+#### WaitForSlotConvergence
+
+Ensures all nodes agree on slot ownership after migrations or topology changes.
+
+```go
+func TestMigration(t *testing.T) {
+    tc := setupTestCluster(t)
+    defer tc.Cleanup()
+
+    waitForClusterHealthy(t, tc.Client(), 10*time.Second)
+
+    // Trigger hashslot migration
+    sourceNode := "127.0.0.1:7000"
+    targetNode := "127.0.0.1:7001"
+    slot := 5000
+
+    migrateSlot(t, tc.Client(), slot, sourceNode, targetNode)
+
+    // CRITICAL: Wait for convergence before testing subscription behavior
+    WaitForSlotConvergence(t, tc.Client(), slot, 10*time.Second)
+
+    // Now test that subscriptions work correctly on migrated slot
+}
+```
+
+**Checks performed:**
+- All nodes report same owner for the slot
+- Slot is not in `migrating` or `importing` state on any node
+- No `MOVED` or `ASK` errors when accessing the slot
+
+**When to use:** After any operation that changes slot ownership (migrations, manual cluster reconfiguration).
+
+---
+
+### Common Testing Patterns
+
+#### Test with Topology Changes
+
+```go
+func TestAutoResubscribe(t *testing.T) {
+    tc := setupTestCluster(t)
+    defer tc.Cleanup()
+
+    // 1. Ensure clean starting state
+    waitForClusterHealthy(t, tc.Client(), 10*time.Second)
+
+    // 2. Create SubMux with auto-resubscribe
+    sm, err := submux.New(tc.Client(), submux.WithAutoResubscribe(true))
+    require.NoError(t, err)
+    defer sm.Close()
+
+    // 3. Subscribe to channel
+    received := make(chan *submux.Message, 10)
+    sub, err := sm.SubscribeSync(context.Background(), []string{"test-channel"},
+        func(ctx context.Context, msg *submux.Message) {
+            received <- msg
+        })
+    require.NoError(t, err)
+    defer sub.Close()
+
+    // 4. Verify subscription works
+    publishAndExpect(t, tc.Client(), "test-channel", "before-migration", received, 5*time.Second)
+
+    // 5. Trigger migration affecting this channel
+    slot := hashslot("test-channel")
+    sourceNode, targetNode := findMigrationNodes(t, tc.Client(), slot)
+    migrateSlot(t, tc.Client(), slot, sourceNode, targetNode)
+
+    // 6. WAIT for convergence (critical!)
+    WaitForSlotConvergence(t, tc.Client(), slot, 10*time.Second)
+
+    // 7. Verify subscription still works after migration
+    publishAndExpect(t, tc.Client(), "test-channel", "after-migration", received, 5*time.Second)
+}
+```
+
+#### Test with Node Failure
+
+```go
+func TestNodeFailureRecovery(t *testing.T) {
+    tc := setupTestCluster(t)
+    defer tc.Cleanup()
+
+    // 1. Ensure cluster is healthy with replicas ready
+    waitForClusterHealthy(t, tc.Client(), 10*time.Second)
+    waitForReplicasReady(t, tc.Client(), 1, 10*time.Second)
+
+    // 2. Set up subscriptions
+    // ... create SubMux and subscribe ...
+
+    // 3. Kill a master node
+    tc.KillNode(masterNodeID)
+
+    // 4. Wait for failover to complete
+    waitForClusterHealthy(t, tc.Client(), 20*time.Second)
+    waitForReplicasReady(t, tc.Client(), 1, 20*time.Second)
+
+    // 5. Verify subscriptions recovered
+    // ... test subscription still works ...
+}
+```
+
+---
+
+### Usage Pattern Summary
 
 ```go
 // ✅ Good: Explicit precondition check

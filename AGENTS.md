@@ -334,19 +334,22 @@ go test -bench=BenchmarkOtelMetrics -benchmem
 
 ## 📋 Configuration Options Quick Reference
 
-**For detailed configuration documentation:** See [DESIGN.md Section 4.3: Configuration Options](DESIGN.md#43-configuration-options)
+**For complete configuration options with defaults and descriptions:** See [README.md: Available Options](https://github.com/lalloni/submux#available-options)
 
-Available via `submux.New(clusterClient, options...)`:
+**For architectural considerations of configuration options:** See [DESIGN.md Section 4.3](DESIGN.md#43-configuration-options)
 
-- `WithAutoResubscribe(bool)` - Enable automatic migration handling (default: `false`)
-- `WithNodePreference(NodePreference)` - Node distribution strategy (default: `BalancedAll`)
-  - `PreferMasters`, `BalancedAll`, `PreferReplicas`
-- `WithTopologyPollInterval(time.Duration)` - Topology refresh rate (default: `1s`, min: `100ms`)
-- `WithMinConnectionsPerNode(int)` - Minimum pool size per node (default: `1`)
-- `WithMigrationTimeout(time.Duration)` - Max migration duration (default: `30s`)
-- `WithMigrationStallCheck(time.Duration)` - Stall check interval (default: `2s`)
-- `WithLogger(*slog.Logger)` - Custom logger (default: `slog.Default()`)
-- `WithMeterProvider(metric.MeterProvider)` - OpenTelemetry metrics (default: `nil`)
+**Most commonly used options:**
+
+```go
+// Enable automatic resubscription during migrations (recommended for production)
+sm, _ := submux.New(rdb, submux.WithAutoResubscribe(true))
+
+// Distribute load across replicas (useful for read-heavy workloads)
+sm, _ := submux.New(rdb, submux.WithNodePreference(submux.PreferReplicas))
+
+// Increase worker pool for high-throughput callbacks
+sm, _ := submux.New(rdb, submux.WithCallbackWorkers(100))
+```
 
 ---
 

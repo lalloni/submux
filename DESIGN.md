@@ -156,20 +156,15 @@ func (sm *SubMux) SSubscribeSync(ctx context.Context, patterns []string, cb Mess
 ```
 
 ### 4.3 Configuration Options
-Configured via functional options in `New()`:
-*   `WithAutoResubscribe(bool)`: Enable automatic handling of migrations.
-*   `WithNodePreference(NodePreference)`: Set node distribution strategy (default: `BalancedAll`):
-    -   `PreferMasters`: Route all subscriptions to master nodes only
-    -   `BalancedAll`: Distribute equally across all nodes (masters + replicas) for optimal resource utilization
-    -   `PreferReplicas`: Prefer replicas to protect write-saturated masters
-*   `WithReplicaPreference(bool)`: **Deprecated** - Use `WithNodePreference()` for clearer intent.
-*   `WithTopologyPollInterval(time.Duration)`: Customized refresh rate.
-*   `WithMinConnectionsPerNode(int)`: Minimum connection pool size.
-*   `WithMigrationTimeout(time.Duration)`: Maximum duration to wait for migration resubscription (default 30s).
-*   `WithMigrationStallCheck(time.Duration)`: How often to check for stalled migration progress (default 2s).
-*   `WithMeterProvider(metric.MeterProvider)`: OpenTelemetry MeterProvider for production observability (default: `nil`, metrics disabled).
-*   `WithCallbackWorkers(int)`: Number of worker goroutines for callback execution (default: `runtime.NumCPU() * 2`).
-*   `WithCallbackQueueSize(int)`: Maximum pending callbacks in the worker pool queue (default: `10000`).
+
+For complete configuration options with defaults and descriptions, see the [Available Options](https://github.com/lalloni/submux#available-options) section in README.md.
+
+**Key architectural considerations:**
+
+*   **`WithAutoResubscribe(bool)`**: Enables transparent failover during hashslot migrations. When enabled, SubMux automatically detects MOVED errors and resubscribes to the correct node without user intervention.
+*   **`WithNodePreference(NodePreference)`**: Controls connection distribution for load balancing. `BalancedAll` (default) distributes across all nodes; `PreferMasters` concentrates load on masters; `PreferReplicas` offloads read operations to replicas.
+*   **`WithMinConnectionsPerNode(int)`**: Affects connection reuse efficiency. Higher values improve concurrency for high subscription counts but increase Redis server load.
+*   **`WithCallbackWorkers(int)` / `WithCallbackQueueSize(int)`**: Controls callback concurrency and backpressure. Workers determine parallelism; queue size determines burst capacity. See Section 6.4 for worker pool architecture.
 
 ---
 
@@ -431,6 +426,96 @@ Messages → Worker Pool Queue → Worker Goroutines → Callback Execution
 *   Workers start when `New()` is called
 *   Workers stop when `Close()` is called, draining any remaining tasks
 *   The callback context (`ctx` parameter) is canceled when `Close()` is called
+
+#### Callback Context Lifetime
+
+The `context.Context` passed to callbacks is derived from SubMux's lifecycle context and controls callback execution during shutdown.
+
+**Context Lifecycle:**
+
+```go
+func(ctx context.Context, msg *submux.Message) {
+    // ctx is canceled when sm.Close() is called
+}
+```
+
+**Behavior:**
+1. **During normal operation:** Context is valid and not canceled
+2. **When Close() is called:**
+   - Lifecycle context is canceled immediately
+   - In-flight callbacks receive cancellation via `ctx.Done()`
+   - New callbacks are not queued (worker pool is stopped)
+   - Close() waits for in-flight callbacks to complete
+
+**Best Practices:**
+
+✅ **DO: Respect context cancellation for long operations**
+```go
+sub, _ := sm.SubscribeSync(ctx, []string{"channel"},
+    func(ctx context.Context, msg *submux.Message) {
+        // Check context cancellation during long operations
+        select {
+        case <-ctx.Done():
+            log.Println("Callback canceled, cleaning up")
+            return
+        case <-time.After(10 * time.Second):
+            // Long operation
+        }
+    })
+```
+
+❌ **DON'T: Ignore context cancellation**
+```go
+sub, _ := sm.SubscribeSync(ctx, []string{"channel"},
+    func(ctx context.Context, msg *submux.Message) {
+        // BAD: Ignores context cancellation
+        time.Sleep(10 * time.Second) // Will block Close()
+        doWork() // May execute after Close()
+    })
+```
+
+**Shutdown Pattern:**
+
+```go
+sm, _ := submux.New(rdb)
+defer sm.Close() // Blocks until all callbacks complete
+
+// Callbacks will receive cancellation signal
+sub, _ := sm.SubscribeSync(ctx, []string{"channel"},
+    func(ctx context.Context, msg *submux.Message) {
+        select {
+        case <-ctx.Done():
+            // Clean shutdown
+            return
+        default:
+            processMessage(msg)
+        }
+    })
+```
+
+**Timeout Behavior:**
+
+If callbacks don't respect context cancellation, `Close()` will block indefinitely. To prevent this, use a timeout wrapper:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+// Close with timeout
+done := make(chan struct{})
+go func() {
+    sm.Close()
+    close(done)
+}()
+
+select {
+case <-done:
+    log.Println("Clean shutdown")
+case <-ctx.Done():
+    log.Println("Shutdown timeout - callbacks didn't respect context")
+    // Force exit or escalate
+}
+```
 
 ---
 

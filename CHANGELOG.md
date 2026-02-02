@@ -5,6 +5,13 @@ All notable changes to the submux project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Comprehensive Documentation Improvements**: Major enhancement to all documentation types
+  - **Troubleshooting Guide**: Added new troubleshooting section to README.md covering common issues (messages not received, slow delivery, migration handling, memory leaks) with diagnostics and solutions
+  - **GoDoc Comments**: Added comprehensive comments for internal types in pool.go (connectionState, command struct, pubSubMetadata) documenting lifecycle, state transitions, and thread safety
+  - **Integration Test Examples**: Enhanced integration/README.md with detailed code examples showing precondition helper usage (waitForClusterHealthy, waitForReplicasReady, WaitForSlotConvergence) and common testing patterns (topology changes, node failures)
+  - **Callback Context Lifetime**: Added detailed section in DESIGN.md Section 6.6 documenting callback context behavior during shutdown, best practices, and timeout handling
+  - **Signal Message Semantics**: Expanded README.md signal section with delivery guarantees table, relationship with auto-resubscribe clarification, and side-by-side examples
+
 - **Observable Gauge Metrics**: Added 3 new gauges for real-time monitoring
   - `submux.connections.active` - Number of active Redis PubSub connections
   - `submux.subscriptions.redis` - Number of active Redis-level subscriptions
@@ -18,6 +25,12 @@ All notable changes to the submux project will be documented in this file.
   - `WaitForSlotConvergence()` - Ensures all nodes agree on slot ownership after migrations
 
 ### Changed
+- **Configuration Documentation Consolidation**: Eliminated duplicated configuration options across multiple files
+  - README.md is now the single source of truth for configuration options with defaults
+  - DESIGN.md Section 4.3 now references README.md and focuses on architectural considerations
+  - AGENTS.md now references README.md with common usage examples
+  - **Impact**: Reduces maintenance burden, prevents inconsistencies, simplifies updates
+
 - **Integration Test Refactoring**: Refactored integration tests from implicit retry-based testing to explicit precondition checks
   - Refactored `TestHashslotMigration`, `TestAutoResubscribe`, `TestNodeFailure_SubscriptionContinuation`, and `TestRollingRestart_Stability` to use precondition checks
   - Updated documentation: `integration/README.md` and `.cursor/rules/testing.md` with precondition helper usage guidelines

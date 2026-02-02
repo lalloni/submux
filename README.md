@@ -173,6 +173,59 @@ sm, _ := submux.New(rdb, submux.WithNodePreference(submux.PreferReplicas))
 
 ## Handling Signal Messages
 
+SubMux sends **signal messages** to notify your application of cluster topology events, regardless of auto-resubscribe configuration.
+
+### Signal Delivery Guarantees
+
+✅ **Signals are ALWAYS sent** - even when `WithAutoResubscribe(true)` is enabled
+✅ **Signals are sent ONCE per event** - not continuously during the event
+✅ **Signals are best-effort** - may be lost if callback queue is full
+
+### When Signals Are Sent
+
+| Event | Signal Sent | EventType | Description |
+|-------|-------------|-----------|-------------|
+| Hashslot migration detected | Yes | `EventMigration` | MOVED error received, resubscription starting |
+| Migration resubscription completed | No | N/A | Silent - resubscription succeeds automatically |
+| Migration stalled (no progress) | Yes | `EventMigrationStalled` | Resubscription is stuck, manual intervention may be needed |
+| Migration timeout reached | Yes | `EventMigrationTimeout` | Resubscription exceeded configured timeout |
+| Node failure detected | Yes | `EventNodeFailure` | Connection to node lost |
+| Topology refresh occurred | No | N/A | Background polling doesn't trigger signals |
+
+### Relationship with Auto-Resubscribe
+
+**Auto-Resubscribe OFF** (default):
+```go
+sm, _ := submux.New(rdb) // auto-resubscribe disabled
+
+sub, _ := sm.SubscribeSync(ctx, []string{"channel"},
+    func(ctx context.Context, msg *submux.Message) {
+        if msg.Type == submux.MessageTypeSignal {
+            // You MUST handle resubscription manually
+            log.Printf("Migration detected: %v", msg.Signal)
+            // Resubscribe logic here
+        }
+    })
+```
+
+**Auto-Resubscribe ON**:
+```go
+sm, _ := submux.New(rdb, submux.WithAutoResubscribe(true))
+
+sub, _ := sm.SubscribeSync(ctx, []string{"channel"},
+    func(ctx context.Context, msg *submux.Message) {
+        if msg.Type == submux.MessageTypeSignal {
+            // Signals are STILL sent, but resubscription is automatic
+            log.Printf("Migration occurred: %v", msg.Signal)
+            // No action needed, just for observability
+        }
+    })
+```
+
+**Key Point:** Signals provide **observability** into cluster events. Auto-resubscribe provides **automatic recovery**. They work together, not as alternatives.
+
+### Signal Handling Example
+
 **Critical for production:** Always handle `MessageTypeSignal` in callbacks to monitor topology events:
 
 ```go
@@ -209,8 +262,6 @@ sub, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(ctx context.Context, ms
 	}
 })
 ```
-
-**Signal messages are sent even when auto-resubscribe is enabled** - use them for monitoring, alerting, and metrics collection.
 
 ## Error Handling
 
@@ -578,6 +629,102 @@ sm, _ := submux.New(rdb,
 # Build without OpenTelemetry dependencies (smaller binary)
 go build -tags nometrics -o myapp
 ```
+
+## Troubleshooting
+
+### Messages Not Being Received
+
+**Symptoms:** Callbacks are not invoked, or only some messages are delivered.
+
+**Possible causes and solutions:**
+
+1. **Channel subscribed to wrong node**
+   - Check logs for "MOVED" errors
+   - Verify `WithAutoResubscribe(true)` is enabled for production
+   - Check that cluster topology is stable with `redis-cli cluster info`
+
+2. **Callback execution blocked**
+   - Check metrics: `submux.workerpool.queue_depth` and `submux.workerpool.dropped`
+   - If queue depth is at capacity, increase `WithCallbackQueueSize()`
+   - If callbacks are being dropped, increase `WithCallbackWorkers()`
+   - Ensure callbacks don't block indefinitely
+
+3. **Connection closed or failed**
+   - Check logs for "connection failed" messages
+   - Check metrics: `submux.connections.created` vs `submux.connections.failed`
+   - Verify Redis cluster is healthy: `redis-cli cluster nodes`
+
+### Slow Message Delivery
+
+**Symptoms:** High latency between publish and callback invocation.
+
+**Diagnostics:**
+- Check metric: `submux.messages.latency` histogram (if metrics enabled)
+- Check metric: `submux.workerpool.queue_wait` (time waiting in queue)
+- Check metric: `submux.callbacks.latency` (callback execution time)
+
+**Solutions:**
+- If `queue_wait` is high: Increase `WithCallbackWorkers()` or `WithCallbackQueueSize()`
+- If `callbacks.latency` is high: Optimize callback logic or offload to async workers
+- If `messages.latency` is high but queue is empty: Check Redis cluster network latency
+
+### Migrations Not Being Handled
+
+**Symptoms:** Subscriptions stop receiving messages after hashslot migration.
+
+**Diagnostics:**
+- Check logs for "migration detected" or "MOVED" errors
+- Check metric: `submux.migrations.started` vs `submux.migrations.completed`
+- Check if `submux.migrations.stalled` or `submux.migrations.timeout` is increasing
+
+**Solutions:**
+- Enable auto-resubscribe: `WithAutoResubscribe(true)`
+- Increase migration timeout if migrations are slow: `WithMigrationTimeout(60 * time.Second)`
+- Decrease stall check interval for faster detection: `WithMigrationStallCheck(1 * time.Second)`
+- Check Redis cluster health during migrations
+
+### Memory or Goroutine Leaks
+
+**Symptoms:** Memory usage grows over time, goroutine count increases.
+
+**Diagnostics:**
+- Use `pprof` to profile goroutines: `go tool pprof http://localhost:6060/debug/pprof/goroutine`
+- Check for unclosed subscriptions: Ensure `sub.Close()` is called
+- Check metrics: Compare active subscriptions count with expected
+
+**Solutions:**
+- Always defer `sub.Close()` after creating subscriptions
+- Call `sm.Close()` when shutting down to clean up all resources
+- Use context cancellation to stop long-running callbacks
+
+### Enabling Debug Logging
+
+```go
+import "log/slog"
+
+logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+    Level: slog.LevelDebug,
+}))
+
+sm, err := submux.New(rdb, submux.WithLogger(logger))
+```
+
+Debug logs include:
+- Connection lifecycle events
+- Subscription state transitions
+- Migration detection and resubscription
+- Error conditions and recovery
+
+### Getting Help
+
+If you're still experiencing issues:
+1. Enable debug logging and collect logs during the problem period
+2. Collect metrics (if enabled) showing the behavior
+3. Open an issue at https://github.com/lalloni/submux/issues with:
+   - Go version and submux version
+   - Minimal reproducible example
+   - Logs and metrics
+   - Redis cluster configuration
 
 ## Documentation
 

@@ -11,7 +11,19 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// connectionState represents the state of a connection.
+// connectionState represents the lifecycle state of a Redis PubSub connection.
+//
+// State transitions:
+//   - connStateActive: Connection is healthy and processing messages/commands
+//   - connStateFailed: Connection encountered an error and is being cleaned up
+//   - connStateClosed: Connection has been explicitly closed and removed from pool
+//
+// Transition rules:
+//   - Active → Failed: On Redis error or channel close
+//   - Failed → Closed: After cleanup and removal from pool
+//   - Active → Closed: On explicit Close() call
+//
+// State changes are protected by pubSubMetadata.mu.
 type connectionState int
 
 const (
@@ -20,7 +32,19 @@ const (
 	connStateClosed
 )
 
-// command represents a command to be sent to Redis.
+// command represents an asynchronous command to be sent to a Redis PubSub connection.
+//
+// Commands are queued and processed by the event loop to ensure serial execution
+// and prevent concurrent access to the Redis connection.
+//
+// Fields:
+//   - cmd: Redis command name (e.g., "SUBSCRIBE", "PSUBSCRIBE", "UNSUBSCRIBE")
+//   - args: Command arguments (e.g., channel names)
+//   - sub: Associated subscription object for tracking
+//   - response: Channel for async error reporting to caller
+//
+// The event loop processes commands from cmdCh and sends errors (if any) back
+// via the response channel.
 type command struct {
 	cmd      string
 	args     []any
@@ -28,7 +52,23 @@ type command struct {
 	response chan error
 }
 
-// pubSubMetadata holds metadata for a PubSub connection.
+// pubSubMetadata holds metadata and state for a single Redis PubSub connection.
+//
+// Each metadata instance manages one connection's lifecycle, including subscription
+// tracking, event loop coordination, and failure handling.
+//
+// Lifecycle:
+//  1. Created when a new connection is established (getOrCreatePubSub)
+//  2. Active: Processes messages and commands via event loop
+//  3. Failed: On error, marks state as failed and notifies subscriptions
+//  4. Closed: Cleanup removes from pool and stops goroutines
+//
+// Thread safety: All mutable fields are protected by mu RWMutex. Lock ordering:
+//   - pool.mu must be acquired before metadata.mu if both are needed
+//   - Never acquire metadata.mu while holding another metadata's lock
+//
+// The event loop goroutine reads from cmdCh and pubsub.Channel(), processes
+// commands serially, and invokes callbacks via the worker pool.
 type pubSubMetadata struct {
 	// pubsub is the PubSub connection.
 	pubsub *redis.PubSub
