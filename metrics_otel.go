@@ -41,6 +41,9 @@ type otelMetrics struct {
 	// Observable gauges (registered dynamically)
 	workerPoolQueueDepth metric.Int64ObservableGauge
 	workerPoolQueueCap   metric.Int64ObservableGauge
+	activeConnections    metric.Int64ObservableGauge
+	redisSubscriptions   metric.Int64ObservableGauge
+	submuxSubscriptions  metric.Int64ObservableGauge
 }
 
 // newOtelMetrics creates a new OpenTelemetry metrics recorder.
@@ -412,5 +415,57 @@ func (m *otelMetrics) registerWorkerPoolGauges(pool *WorkerPool) {
 	)
 	if err != nil {
 		m.logger.Warn("submux: failed to create workerPoolQueueCap gauge", "error", err)
+	}
+}
+
+// registerPoolGauges registers observable gauges for connection and subscription monitoring.
+// This should be called once after the pool and SubMux are created.
+func (m *otelMetrics) registerPoolGauges(pool *pubSubPool, subMux *SubMux) {
+	if pool == nil || subMux == nil || m.meter == nil {
+		return
+	}
+
+	var err error
+
+	// Register active connections gauge
+	m.activeConnections, err = m.meter.Int64ObservableGauge(
+		"submux.connections.active",
+		metric.WithDescription("Number of active Redis PubSub connections"),
+		metric.WithUnit("{connection}"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(int64(pool.connectionCount()))
+			return nil
+		}),
+	)
+	if err != nil {
+		m.logger.Warn("submux: failed to create activeConnections gauge", "error", err)
+	}
+
+	// Register Redis-level subscriptions gauge
+	m.redisSubscriptions, err = m.meter.Int64ObservableGauge(
+		"submux.subscriptions.redis",
+		metric.WithDescription("Number of active subscriptions on Redis connections (SUBSCRIBE/PSUBSCRIBE/SSUBSCRIBE)"),
+		metric.WithUnit("{subscription}"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(int64(pool.redisSubscriptionCount()))
+			return nil
+		}),
+	)
+	if err != nil {
+		m.logger.Warn("submux: failed to create redisSubscriptions gauge", "error", err)
+	}
+
+	// Register SubMux-level subscriptions gauge
+	m.submuxSubscriptions, err = m.meter.Int64ObservableGauge(
+		"submux.subscriptions.active",
+		metric.WithDescription("Number of active SubMux subscription handles"),
+		metric.WithUnit("{subscription}"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(int64(subMux.subscriptionCount()))
+			return nil
+		}),
+	)
+	if err != nil {
+		m.logger.Warn("submux: failed to create submuxSubscriptions gauge", "error", err)
 	}
 }

@@ -103,8 +103,9 @@ Alternatively, re-subscription could be determined by the callback function when
 - `submux.topology.refresh_latency` - Topology refresh time
 - `submux.workerpool.queue_wait` - Queue wait time before execution
 
-**Observable Gauges (2 - worker pool implemented, others planned):**
+**Observable Gauges (5):**
 - ✅ `submux.workerpool.queue_depth` - Current tasks in queue
 - ✅ `submux.workerpool.queue_capacity` - Maximum queue capacity
-- ⏳ `submux.subscriptions.active` - Current subscriptions (planned)
-- ⏳ `submux.connections.active` - Current connections (planned)
+- ✅ `submux.connections.active` - Active Redis PubSub connections
+- ✅ `submux.subscriptions.redis` - Active Redis-level subscriptions
+- ✅ `submux.subscriptions.active` - Active SubMux subscription handles

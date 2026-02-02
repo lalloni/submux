@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -278,6 +279,119 @@ func TestOtelMetrics_WorkerPoolGauges(t *testing.T) {
 	}
 	if !foundQueueCapacity {
 		t.Error("queue_capacity gauge not found")
+	}
+}
+
+// TestOtelMetrics_PoolGauges tests the observable gauges for connections and subscriptions
+func TestOtelMetrics_PoolGauges(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	recorder := newMetricsRecorder(provider, slog.Default())
+
+	// Create pool and SubMux in minimal state for testing
+	pool := &pubSubPool{
+		nodePubSubs:    make(map[string][]*redis.PubSub),
+		pubSubMetadata: make(map[*redis.PubSub]*pubSubMetadata),
+	}
+
+	subMux := &SubMux{
+		subscriptions: make(map[string][]*subscription),
+	}
+
+	// Add some test data to verify counts
+	// Add 2 mock connections
+	mockPubSub1 := &redis.PubSub{}
+	mockPubSub2 := &redis.PubSub{}
+	pool.nodePubSubs["node1"] = []*redis.PubSub{mockPubSub1}
+	pool.nodePubSubs["node2"] = []*redis.PubSub{mockPubSub2}
+
+	// Add metadata with subscriptions
+	meta1 := &pubSubMetadata{
+		subscriptions: map[string][]*subscription{
+			"channel1": {&subscription{}},
+		},
+	}
+	meta2 := &pubSubMetadata{
+		subscriptions: map[string][]*subscription{
+			"channel2": {&subscription{}, &subscription{}},
+		},
+	}
+	pool.pubSubMetadata[mockPubSub1] = meta1
+	pool.pubSubMetadata[mockPubSub2] = meta2
+
+	// Add SubMux subscriptions
+	subMux.subscriptions["channel1"] = []*subscription{&subscription{}, &subscription{}}
+	subMux.subscriptions["channel2"] = []*subscription{&subscription{}}
+
+	// Register the gauges
+	recorder.registerPoolGauges(pool, subMux)
+
+	// Collect metrics
+	rm := &metricdata.ResourceMetrics{}
+	err := reader.Collect(context.Background(), rm)
+	if err != nil {
+		t.Fatalf("failed to collect metrics: %v", err)
+	}
+
+	// Verify we have metrics
+	if len(rm.ScopeMetrics) == 0 {
+		t.Fatal("no scope metrics collected")
+	}
+
+	// Find and verify the gauge metrics
+	foundConnections := false
+	foundRedisSubscriptions := false
+	foundSubmuxSubscriptions := false
+
+	for _, m := range rm.ScopeMetrics[0].Metrics {
+		switch m.Name {
+		case "submux.connections.active":
+			foundConnections = true
+			if gauge, ok := m.Data.(metricdata.Gauge[int64]); ok {
+				if len(gauge.DataPoints) > 0 {
+					value := gauge.DataPoints[0].Value
+					t.Logf("connections.active = %d", value)
+					if value != 2 {
+						t.Errorf("expected 2 connections, got %d", value)
+					}
+				}
+			}
+
+		case "submux.subscriptions.redis":
+			foundRedisSubscriptions = true
+			if gauge, ok := m.Data.(metricdata.Gauge[int64]); ok {
+				if len(gauge.DataPoints) > 0 {
+					value := gauge.DataPoints[0].Value
+					t.Logf("subscriptions.redis = %d", value)
+					if value != 3 { // meta1 has 1, meta2 has 2
+						t.Errorf("expected 3 redis subscriptions, got %d", value)
+					}
+				}
+			}
+
+		case "submux.subscriptions.active":
+			foundSubmuxSubscriptions = true
+			if gauge, ok := m.Data.(metricdata.Gauge[int64]); ok {
+				if len(gauge.DataPoints) > 0 {
+					value := gauge.DataPoints[0].Value
+					t.Logf("subscriptions.active = %d", value)
+					if value != 3 { // channel1 has 2, channel2 has 1
+						t.Errorf("expected 3 submux subscriptions, got %d", value)
+					}
+				}
+			}
+		}
+	}
+
+	if !foundConnections {
+		t.Error("submux.connections.active gauge not found")
+	}
+	if !foundRedisSubscriptions {
+		t.Error("submux.subscriptions.redis gauge not found")
+	}
+	if !foundSubmuxSubscriptions {
+		t.Error("submux.subscriptions.active gauge not found")
 	}
 }
 

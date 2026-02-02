@@ -352,11 +352,19 @@ submux provides built-in OpenTelemetry metrics for production monitoring and deb
 | `submux.topology.refresh_latency` | Topology refresh time | ms | - |
 | `submux.workerpool.queue_wait` | Queue wait time before execution | ms | - |
 
-**Observable Gauges (2):**
+**Observable Gauges (5):**
 | Metric Name | Description | Unit | Attributes |
 |-------------|-------------|------|------------|
 | `submux.workerpool.queue_depth` | Current tasks in queue | {task} | - |
 | `submux.workerpool.queue_capacity` | Maximum queue capacity | {task} | - |
+| `submux.connections.active` | Active Redis PubSub connections | {connection} | - |
+| `submux.subscriptions.redis` | Active Redis-level subscriptions | {subscription} | - |
+| `submux.subscriptions.active` | Active SubMux subscription handles | {subscription} | - |
+
+**Metric Relationships:**
+- Multiple SubMux subscriptions may share one Redis subscription (deduplication)
+- Multiple Redis subscriptions are distributed across Redis connections
+- Example: 10 users subscribe to same channel → 10 active, 1 redis, 1 connection
 
 #### 6.5.3 Cardinality Management
 
@@ -427,5 +435,4 @@ Messages → Worker Pool Queue → Worker Goroutines → Callback Execution
 ---
 
 ## 7. Future Roadmap
-*   **Observable Gauges**: Polling-based metrics for active subscriptions and connections. (Worker pool gauges `queue_depth` and `queue_capacity` are already implemented.)
 *   **Dynamic Tuning**: Auto-adjusting pool sizes based on load.

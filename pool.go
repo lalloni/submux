@@ -740,3 +740,33 @@ func (p *pubSubPool) closeAll() error {
 
 	return firstErr
 }
+
+// connectionCount returns the total number of active PubSub connections.
+// This method is thread-safe and can be called from metric collection callbacks.
+func (p *pubSubPool) connectionCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	// Count total connections across all nodes
+	count := 0
+	for _, pubsubs := range p.nodePubSubs {
+		count += len(pubsubs)
+	}
+	return count
+}
+
+// redisSubscriptionCount returns the total number of active subscriptions across all connections.
+// This counts Redis-level subscriptions (SUBSCRIBE/PSUBSCRIBE/SSUBSCRIBE commands).
+// This method is thread-safe and can be called from metric collection callbacks.
+func (p *pubSubPool) redisSubscriptionCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	// Count subscriptions across all connections
+	count := 0
+	for _, meta := range p.pubSubMetadata {
+		// subscriptionCount() on metadata already has its own lock
+		count += meta.subscriptionCount()
+	}
+	return count
+}

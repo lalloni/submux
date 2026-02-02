@@ -5,6 +5,13 @@ All notable changes to the submux project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Observable Gauge Metrics**: Added 3 new gauges for real-time monitoring
+  - `submux.connections.active` - Number of active Redis PubSub connections
+  - `submux.subscriptions.redis` - Number of active Redis-level subscriptions
+  - `submux.subscriptions.active` - Number of active SubMux subscription handles
+  - Completes metrics implementation from TODO.md
+  - All gauges use thread-safe callbacks for zero-overhead collection
+
 - **Integration Test Precondition Helpers**: Added explicit state validation helpers for integration tests
   - `waitForClusterHealthy()` - Validates cluster_state:ok, all slots assigned, no failed slots
   - `waitForReplicasReady()` - Ensures all masters have required number of replicas

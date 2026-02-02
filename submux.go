@@ -202,6 +202,21 @@ type SubMux struct {
 	closeOnce sync.Once
 }
 
+// subscriptionCount returns the total number of active SubMux-level subscriptions.
+// This counts user-facing subscription handles, not Redis-level subscriptions.
+// This method is thread-safe and can be called from metric collection callbacks.
+func (sm *SubMux) subscriptionCount() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	// Count all subscriptions across all channels/patterns
+	count := 0
+	for _, subs := range sm.subscriptions {
+		count += len(subs)
+	}
+	return count
+}
+
 // New creates a new SubMux instance wrapping a ClusterClient.
 func New(clusterClient *redis.ClusterClient, opts ...Option) (*SubMux, error) {
 	if clusterClient == nil {
@@ -243,6 +258,9 @@ func New(clusterClient *redis.ClusterClient, opts ...Option) (*SubMux, error) {
 
 	// Set SubMux reference in pool for accessing worker pool and lifecycle context
 	subMux.pool.setSubMux(subMux)
+
+	// Register pool and subscription observable gauges for metrics
+	cfg.recorder.registerPoolGauges(pool, subMux)
 
 	// Create and start topology monitor
 	subMux.topologyMonitor = newTopologyMonitor(clusterClient, cfg, subMux)

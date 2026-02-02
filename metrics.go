@@ -34,6 +34,7 @@ type metricsRecorder interface {
 
 	// Gauge registration (for observable metrics)
 	registerWorkerPoolGauges(pool *WorkerPool)
+	registerPoolGauges(pool *pubSubPool, subMux *SubMux)
 }
 
 // newMetricsRecorder creates a metrics recorder based on the provided MeterProvider.
@@ -70,3 +71,4 @@ func (n *noopMetrics) recordMigrationDuration(time.Duration)       {}
 func (n *noopMetrics) recordTopologyRefreshLatency(time.Duration)  {}
 func (n *noopMetrics) recordWorkerPoolQueueWait(time.Duration)     {}
 func (n *noopMetrics) registerWorkerPoolGauges(*WorkerPool)        {}
+func (n *noopMetrics) registerPoolGauges(*pubSubPool, *SubMux)     {}
