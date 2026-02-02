@@ -2,6 +2,31 @@
 
 All notable changes to the submux project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Integration Test Precondition Helpers**: Added explicit state validation helpers for integration tests
+  - `waitForClusterHealthy()` - Validates cluster_state:ok, all slots assigned, no failed slots
+  - `waitForReplicasReady()` - Ensures all masters have required number of replicas
+  - `WaitForSlotConvergence()` - Ensures all nodes agree on slot ownership after migrations
+
+### Changed
+- **Integration Test Refactoring**: Refactored integration tests from implicit retry-based testing to explicit precondition checks
+  - Refactored `TestHashslotMigration`, `TestAutoResubscribe`, `TestNodeFailure_SubscriptionContinuation`, and `TestRollingRestart_Stability` to use precondition checks
+  - Updated documentation: `integration/README.md` and `.cursor/rules/testing.md` with precondition helper usage guidelines
+  - **Impact**: Tests now provide better diagnostics (show exact precondition failure), execute faster (skip unnecessary retries), and have clearer intent
+
+### Removed
+- **Deprecated Test Utilities**: Removed `retryWithBackoff()` and `waitForCondition()` from `integration/shared_cluster_test.go`
+  - These generic retry helpers have been completely replaced by explicit precondition checks
+  - All tests now use explicit state validation instead of implicit retries
+
+- **Dead Code Cleanup**: Removed unused testing infrastructure (~175 lines)
+  - Deleted entire `testutil/` package (helpers.go, mock_cluster.go) - never used, superseded by real Redis integration tests
+  - Removed `mockClusterClientForPool` from `pool_test.go` - defined but never instantiated
+  - Removed unused `TestCluster` diagnostic methods: `GetAddrs()`, `GetProcessOutput()`, `GetClusterInitOutput()`
+  - Updated all documentation to remove references to deleted code
+
 ## [3.0.0] - 2026-01-30
 
 ### Added

@@ -60,6 +60,35 @@ integration/
 └── README.md            # This file
 ```
 
+## 🎯 Test Precondition Helpers
+
+Integration tests should use **explicit precondition checks** rather than retrying operations. This makes tests more reliable by validating underlying Redis cluster state before proceeding with test operations.
+
+### Available Helpers
+
+| Helper | Purpose | Checks |
+|--------|---------|--------|
+| `waitForClusterHealthy(client, timeout)` | Ensures cluster is operational | `cluster_state:ok`, all 16384 slots assigned, no failed slots |
+| `waitForReplicasReady(client, requiredPerMaster, timeout)` | Ensures replication is available | All masters have N connected replicas |
+| `WaitForSlotConvergence(cluster, slot, expectedOwner, timeout)` | Ensures consistent slot routing | All nodes agree on slot owner |
+
+### Usage Pattern
+
+```go
+// ✅ Good: Explicit precondition check
+err := waitForClusterHealthy(t, client, 5*time.Second)
+require.NoError(t, err, "Cluster not healthy")
+client.Publish(...) // Safe - cluster is healthy
+```
+
+### Why Use Precondition Checks?
+
+1. **Better Diagnostics**: When a test fails, you know exactly which precondition wasn't met (e.g., "cluster_state:fail, slots_fail:42" vs "publish failed after 3 retries")
+2. **Faster Execution**: Skip unnecessary retries when cluster is already healthy
+3. **Clear Intent**: Test code explicitly states what infrastructure state is required
+4. **Easier Debugging**: Logs show exactly what's being waited for and when it's achieved
+5. **No Generic Retries**: The old `retryWithBackoff()` helper has been removed in favor of explicit state validation
+
 ## ⚠️ Common Issues
 
 - **Port Conflicts**: If tests fail immediately, check if many ports are occupied. The harness tries to find free ones but limits retries.

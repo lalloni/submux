@@ -68,29 +68,30 @@ func TestHashslotMigration(t *testing.T) {
 		t.Fatal("Could not find a different target node for migration")
 	}
 
-	// Publish a message before migration to verify connectivity (with retry for cluster stabilization)
+	// Wait for cluster to be healthy before proceeding
 	pubClient := cluster.GetClusterClient()
-	err = retryWithBackoff(t, 3, 100*time.Millisecond, func() error {
-		pubErr := pubClient.SPublish(context.Background(), channelName, "before-migration").Err()
-		if pubErr != nil {
-			pubErr = pubClient.Publish(context.Background(), channelName, "before-migration").Err()
-		}
-		if pubErr != nil {
-			return fmt.Errorf("publish failed: %w", pubErr)
-		}
-
-		select {
-		case msg := <-messages:
-			if msg.Payload != "before-migration" {
-				return fmt.Errorf("expected 'before-migration', got %q", msg.Payload)
-			}
-			return nil
-		case <-time.After(2 * time.Second):
-			return fmt.Errorf("timeout waiting for message before migration")
-		}
-	})
+	err = waitForClusterHealthy(t, pubClient, 5*time.Second)
 	if err != nil {
-		t.Fatalf("Failed initial connectivity check: %v", err)
+		t.Fatalf("Cluster not healthy before migration test: %v", err)
+	}
+
+	// Verify connectivity (no retry needed - cluster is healthy)
+	err = pubClient.SPublish(context.Background(), channelName, "before-migration").Err()
+	if err != nil {
+		// Fallback to regular publish if sharded not supported
+		err = pubClient.Publish(context.Background(), channelName, "before-migration").Err()
+	}
+	if err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+
+	select {
+	case msg := <-messages:
+		if msg.Payload != "before-migration" {
+			t.Fatalf("Expected 'before-migration', got %q", msg.Payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for message before migration")
 	}
 
 	// Perform actual migration
@@ -157,28 +158,29 @@ func TestAutoResubscribe(t *testing.T) {
 		}
 	}
 
-	// Verify initial connectivity with retry (cluster may need time to stabilize)
-	err = retryWithBackoff(t, 3, 100*time.Millisecond, func() error {
-		pubErr := client.SPublish(context.Background(), channelName, "initial").Err()
-		if pubErr != nil {
-			pubErr = client.Publish(context.Background(), channelName, "initial").Err()
-		}
-		if pubErr != nil {
-			return fmt.Errorf("publish failed: %w", pubErr)
-		}
-
-		select {
-		case msg := <-messages:
-			if msg.Payload != "initial" {
-				return fmt.Errorf("expected 'initial', got %q", msg.Payload)
-			}
-			return nil
-		case <-time.After(2 * time.Second):
-			return fmt.Errorf("timeout waiting for initial message")
-		}
-	})
+	// Wait for cluster healthy and slot convergence before testing auto-resubscribe
+	err = waitForClusterHealthy(t, client, 5*time.Second)
 	if err != nil {
-		t.Fatalf("Failed initial connectivity check: %v", err)
+		t.Fatalf("Cluster not healthy: %v", err)
+	}
+
+	// Verify initial connectivity (no retry needed - cluster is healthy)
+	err = client.SPublish(context.Background(), channelName, "initial").Err()
+	if err != nil {
+		// Fallback to regular publish if sharded not supported
+		err = client.Publish(context.Background(), channelName, "initial").Err()
+	}
+	if err != nil {
+		t.Fatalf("Initial publish failed: %v", err)
+	}
+
+	select {
+	case msg := <-messages:
+		if msg.Payload != "initial" {
+			t.Fatalf("Expected 'initial', got %q", msg.Payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for initial message")
 	}
 
 	// Migrate
@@ -188,10 +190,11 @@ func TestAutoResubscribe(t *testing.T) {
 		t.Fatalf("Failed to migrate hashslot: %v", err)
 	}
 
-	// Wait for migration detection and resubscription
-	// MigrateHashslot now waits for cluster convergence, but we still need
-	// to allow time for the topology monitor to poll and detect the change.
-	time.Sleep(150 * time.Millisecond)
+	// Wait for slot ownership to converge before checking auto-resubscribe
+	err = WaitForSlotConvergence(t, cluster, hashslot, targetNode, 3*time.Second)
+	if err != nil {
+		t.Fatalf("Slot convergence timeout: %v", err)
+	}
 
 	// Reload state to ensure client knows about new topology for correct routing
 	client.ReloadState(context.Background())
@@ -428,37 +431,10 @@ func TestNodeFailure_SubscriptionContinuation(t *testing.T) {
 	// Our test config sets cluster-node-timeout to 5000ms
 	t.Log("Waiting for failover and cluster health...")
 
-	// Wait for cluster specific state to become OK via another node
-	ok := false
-	for i := 0; i < 120; i++ {
-		time.Sleep(50 * time.Millisecond)
-
-		// Get a living node client
-		var checkClient *redis.Client
-		for _, node := range cluster.GetNodes() {
-			if node.Address != masterNodeAddr {
-				checkClient = redis.NewClient(&redis.Options{Addr: node.Address})
-				if err := checkClient.Ping(context.Background()).Err(); err == nil {
-					break
-				}
-				checkClient.Close()
-				checkClient = nil
-			}
-		}
-
-		if checkClient != nil {
-			info, _ := checkClient.ClusterInfo(context.Background()).Result()
-			checkClient.Close()
-			if strings.Contains(info, "cluster_state:ok") {
-				ok = true
-				t.Log("Cluster state is OK")
-				break
-			}
-		}
-	}
-
-	if !ok {
-		t.Skip("Cluster failed to recover to OK state in time (environment issue), skipping test")
+	// Wait for cluster to recover from failover
+	err = waitForClusterHealthy(t, client, 6*time.Second)
+	if err != nil {
+		t.Skipf("Cluster did not recover from failover: %v", err)
 	}
 
 	// Find a healthy node to use as entry point for publishing

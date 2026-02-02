@@ -154,8 +154,6 @@ The submux project maintains a carefully structured documentation hierarchy to p
   - `resiliency_test.go` - Replica failures, rolling restarts, chaos testing
   - `concurrency_test.go` - Race conditions, concurrent subscriptions
   - `load_test.go` - High throughput, memory usage
-- `testutil/` - Test helpers and mocks
-  - `mock_cluster.go` - Mock ClusterClient for unit tests
 
 **For detailed component descriptions:** See [DESIGN.md Section 2.1: High-Level Design](DESIGN.md#21-high-level-design)
 

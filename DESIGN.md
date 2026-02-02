@@ -176,10 +176,11 @@ Configured via functional options in `New()`:
 ## 5. Testing Strategy
 
 ### 5.1 Test Layers
-*   **Unit Tests**: Isolated tests for `hashslot`, `pool`, and `subscription` logic. Uses mocked `ClusterClient` via `testutil`.
+*   **Unit Tests**: Isolated tests for `hashslot`, `pool`, and `subscription` logic with table-driven test patterns.
 *   **Integration Tests**: Run against real local Redis Cluster instances.
     *   Located in `integration/`.
     *   Spawns local `redis-server` processes on random ports.
+    *   Uses explicit precondition checks (`waitForClusterHealthy`, `WaitForSlotConvergence`, etc.) for reliable testing.
 *   **Topology Tests**: Simulates migrations by issuing `CLUSTER SETSLOT` commands and verifying `signal` messages.
 
 ### 5.2 Key Scenarios Covered

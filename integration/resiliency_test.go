@@ -184,11 +184,10 @@ func TestReplicaFailure_Recovery(t *testing.T) {
 		t.Fatalf("Failed to stop replica: %v", err)
 	}
 
-	// Verify we can still receive messages (SubMux should reconnect to master or another replica)
-	// We publish multiple times to allow for reconnection window
-	t.Log("Publishing messages during failure...")
-
-	// Give a small moment for disconnect detection
+	// Wait for cluster to detect replica failure and rebalance
+	// Note: replica failure should NOT make cluster unhealthy (only reduce redundancy)
+	// So we just wait a brief moment for the cluster to detect the disconnection
+	t.Log("Waiting for cluster to detect replica failure...")
 	time.Sleep(150 * time.Millisecond)
 
 	receivedRecovery := false
@@ -246,6 +245,18 @@ func TestRollingRestart_Stability(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Failed to subscribe: %v", err)
+	}
+
+	// Ensure cluster is healthy before chaos testing
+	err = waitForClusterHealthy(t, client, 5*time.Second)
+	if err != nil {
+		t.Fatalf("Cluster not healthy before rolling restart test: %v", err)
+	}
+
+	// Ensure replicas are available (so cluster can tolerate restarts)
+	err = waitForReplicasReady(t, client, 1, 5*time.Second)
+	if err != nil {
+		t.Fatalf("Replicas not ready before rolling restart test: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

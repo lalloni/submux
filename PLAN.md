@@ -86,7 +86,7 @@ We have successfully completed all 11 phases of the original implementation plan
 - ~66% Code Coverage (Logic layer).
 - Covers: Hashslot, Pool lifecycle, Subscription states, Config options, WorkerPool, Topology selection, Edge cases.
 - 75 test functions across 8 test files.
-- Mock-based testing via `testutil`.
+- Table-driven test patterns for comprehensive scenario coverage.
 
 **2. Integration Tests (`integration/`)**
 - Additional coverage with real Redis Cluster.

@@ -125,8 +125,8 @@ func TestHighSubscriptionCount_MemoryUsage(t *testing.T) {
 
 	t.Logf("Memory allocated for %d subscriptions: %d KB (%.2f bytes/channel)", numChannels, allocDiffKB, float64(bytesPerChannel))
 
-	// Verify reasonable memory usage (should be < 1MB for 5000 subscriptions)
-	if allocDiff > 10*1024*1024 {
+	// Verify reasonable memory usage (should be < 1MB for 10000 subscriptions)
+	if allocDiff > 1*1024*1024 {
 		t.Errorf("Memory usage too high: %d KB for %d subscriptions", allocDiffKB, numChannels)
 	}
 }
