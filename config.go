@@ -56,8 +56,8 @@ func defaultConfig() *config {
 		topologyPollInterval:  1 * time.Second,  // Default: poll at least once per second
 		migrationTimeout:      30 * time.Second, // Default: 30s max for migration resubscription
 		migrationStallCheck:   2 * time.Second,  // Default: check for stalls every 2s
-		callbackWorkers:       0,               // Default: 0 means runtime.NumCPU() * 2
-		callbackQueueSize:     0,               // Default: 0 means 10000
+		callbackWorkers:       0,                // Default: 0 means runtime.NumCPU() * 2
+		callbackQueueSize:     0,                // Default: 0 means 10000
 		logger:                slog.Default(),
 		meterProvider:         nil,            // Default: metrics disabled
 		recorder:              &noopMetrics{}, // Default: no-op recorder

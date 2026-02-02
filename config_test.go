@@ -278,9 +278,9 @@ func TestOptionOverwrite(t *testing.T) {
 
 func TestWithMeterProvider(t *testing.T) {
 	tests := []struct {
-		name           string
-		provider       func() any
-		expectNil      bool
+		name      string
+		provider  func() any
+		expectNil bool
 	}{
 		{
 			name:      "nil provider",
