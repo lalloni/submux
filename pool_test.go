@@ -11,30 +11,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// mockClusterClientForPool creates a minimal mock for pool testing
-type mockClusterClientForPool struct {
-	subscribeFunc    func(ctx context.Context) *redis.PubSub
-	clusterSlotsFunc func(ctx context.Context) *redis.ClusterSlotsCmd
-}
-
-func (m *mockClusterClientForPool) Subscribe(ctx context.Context, channels ...string) *redis.PubSub {
-	if m.subscribeFunc != nil {
-		return m.subscribeFunc(ctx)
-	}
-	// Return a real PubSub that will be closed immediately
-	// This is a workaround - in real tests we'd use a proper mock
-	return nil
-}
-
-func (m *mockClusterClientForPool) ClusterSlots(ctx context.Context) *redis.ClusterSlotsCmd {
-	if m.clusterSlotsFunc != nil {
-		return m.clusterSlotsFunc(ctx)
-	}
-	cmd := redis.NewClusterSlotsCmd(ctx)
-	cmd.SetErr(redis.Nil)
-	return cmd
-}
-
 func TestPubSubPool_Creation(t *testing.T) {
 	cfg := defaultConfig()
 	// We can't easily test with real ClusterClient without Redis, so we test the structure

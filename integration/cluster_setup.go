@@ -686,18 +686,6 @@ func (tc *TestCluster) StopCluster(ctx context.Context) error {
 	return firstErr
 }
 
-// GetAddrs returns all node addresses in the cluster.
-func (tc *TestCluster) GetAddrs() []string {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	addrs := make([]string, len(tc.nodes))
-	for i, node := range tc.nodes {
-		addrs[i] = node.Address
-	}
-	return addrs
-}
-
 // GetClusterClient returns the cluster client for this test cluster.
 func (tc *TestCluster) GetClusterClient() *redis.ClusterClient {
 	tc.mu.Lock()
@@ -760,30 +748,6 @@ func (tc *TestCluster) DumpProcessOutput() {
 	}
 
 	fmt.Fprintf(os.Stderr, "=== End Redis Cluster Output Dump ===\n\n")
-}
-
-// GetProcessOutput returns the captured output for a specific node index.
-// Returns empty string if the index is out of range.
-func (tc *TestCluster) GetProcessOutput(nodeIndex int) string {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	if nodeIndex < 0 || nodeIndex >= len(tc.processOutputs) {
-		return ""
-	}
-
-	if tc.processOutputs[nodeIndex] == nil {
-		return ""
-	}
-
-	return tc.processOutputs[nodeIndex].String()
-}
-
-// GetClusterInitOutput returns the output from the redis-cli cluster initialization.
-func (tc *TestCluster) GetClusterInitOutput() string {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-	return tc.clusterInitOut
 }
 
 // StopNode stops a specific node by address.
