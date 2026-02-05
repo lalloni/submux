@@ -165,7 +165,7 @@ client.Publish(...)
 4. **Increase timeouts:** Be generous with timeouts in integration tests
 5. **Isolate state:** Use unique identifiers for channels, keys, connections
 
-### Recent Fixes (v3.0.0)
+### Recent Fixes (v0.3.0)
 - ✅ Added retry utilities with exponential backoff
 - ✅ Increased timeouts for topology polling
 - ✅ Used unique channel names per test

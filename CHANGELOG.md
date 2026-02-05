@@ -47,7 +47,7 @@ All notable changes to the submux project will be documented in this file.
   - Removed unused `TestCluster` diagnostic methods: `GetAddrs()`, `GetProcessOutput()`, `GetClusterInitOutput()`
   - Updated all documentation to remove references to deleted code
 
-## [3.0.0] - 2026-01-30
+## [0.3.0] - 2026-01-30
 
 ### Added
 - **Bounded Worker Pool**: Callbacks are now executed through a bounded worker pool that prevents goroutine explosion under high message throughput.
@@ -137,7 +137,7 @@ All notable changes to the submux project will be documented in this file.
   - `TestHashslotMigration` and `TestAutoResubscribe` now tolerate cluster startup timing
   - Improved full integration suite pass rate from ~70% to >95%
 
-## [2.2.1] - 2026-01-30
+## [0.2.4] - 2026-01-30
 
 ### Changed
 - **Code Modernization**: Updated codebase to use Go 1.25.6 standard library improvements
@@ -146,7 +146,7 @@ All notable changes to the submux project will be documented in this file.
   - Replaced legacy `sync/atomic` functions with typed `atomic.Int64` (15+ instances)
   - No behavioral changes; purely syntactic improvements for better readability and safety
 
-## [2.2.0] - 2026-01-26
+## [0.2.3] - 2026-01-26
 
 ### Added
 - **OpenTelemetry Metrics Integration**: Production-ready observability with 21 metrics (11 counters, 4 histograms, 2 observable gauges planned).
@@ -196,7 +196,7 @@ All notable changes to the submux project will be documented in this file.
 - **Integration**: Metrics recording integrated across 7 core files (callback.go, eventloop.go, pool.go, submux.go, topology.go, types.go, config.go)
 - **Bug Fixes**: Fixed nil recorder bug and race conditions in signal message delivery
 
-## [2.1.1] - 2026-01-10
+## [0.2.2] - 2026-01-10
 
 ### Fixed
 - **Integration Test Stability**: Improved test reliability and execution speed.
@@ -214,7 +214,7 @@ All notable changes to the submux project will be documented in this file.
   - Reduced test flakiness in concurrent scenarios
   - Better test isolation and cleanup
 
-## [2.1.0] - 2026-01-09
+## [0.2.1] - 2026-01-09
 
 ### Added
 - **Real-time MOVED/ASK Detection**: Subscription commands now detect MOVED/ASK redirect errors and immediately trigger topology refresh, reducing migration detection latency.
@@ -232,7 +232,7 @@ All notable changes to the submux project will be documented in this file.
 - **Orphaned Processes**: Tests no longer leave redis-server processes running after interruption (Ctrl+C, timeout, kill).
 - **Goroutine Leak in Migration**: Migration resubscription now uses `sync.WaitGroup` to track spawned goroutines and `atomic.Int64` for progress tracking, preventing goroutine leaks when monitoring exits early.
 
-## [2.0.0] - 2026-01-06
+## [0.2.0] - 2026-01-06
 
 ### Changed
 - **Breaking API Change**: Renamed `Subscription` struct to `Sub` to be more concise.
@@ -240,7 +240,7 @@ All notable changes to the submux project will be documented in this file.
     - Updated `Unsubscribe` method receiver to `*Sub`.
 - **Refactor**: Replaced literal Redis command strings with internal constants for better maintainability.
 
-## [1.0.0] - 2026-01-06
+## [0.1.0] - 2026-01-06
 
 ### Added
 - **Design Consolidation**: Merged all design documents into a comprehensive `DESIGN.md`.
@@ -257,13 +257,13 @@ All notable changes to the submux project will be documented in this file.
     - `COMPLETION_SUMMARY.md`
     - (and 9 others)
 - **Import Path**: Updated all import paths to `github.com/lalloni/submux`.
-- **Status**: Mark project as **v1.0.0** (Mature).
+- **Status**: Mark project as production-ready.
 
 ### Fixed
 - **Duplicate Lines**: Removed duplicate entries in `DESIGN.md` introduced during consolidation.
 - **Stale References**: Updated code comments referencing deleted files.
 
-## [0.9.0] - 2025-12-29
+## [0.0.9] - 2025-12-29
 
 
 #### Architecture Refactoring: Single Event Loop Per PubSub
@@ -309,7 +309,7 @@ All notable changes to the submux project will be documented in this file.
 
 **Performance**: No regression observed, potential improvements in memory usage.
 
-## [Initial Development] - 2025-12-27 to 2025-12-29
+## [0.0.1] - 2025-12-27 to 2025-12-29
 
 ### Added
 
