@@ -2,6 +2,7 @@ package submux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -40,7 +41,12 @@ func runEventLoop(meta *pubSubMetadata) {
 					default:
 					}
 				}
-				// Mark PubSub as failed
+				// Context cancellation/deadline are caller-initiated, not connection failures.
+				// Do not mark the connection as failed or exit the event loop.
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					continue
+				}
+				// Genuine connection/Redis error - treat as fatal
 				meta.setState(connStateFailed)
 				meta.logger.Error("submux: command send error", "node", meta.nodeAddr, "error", err)
 				return

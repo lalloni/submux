@@ -4,6 +4,18 @@ All notable changes to the submux project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Event loop no longer treats context cancellation as connection failure**: When `sendRedisCommand` returned `context.Canceled` or `context.DeadlineExceeded` (e.g., from an unsubscribe with a tight deadline), the event loop incorrectly marked the entire PubSub connection as failed and exited, killing all subscriptions sharing that connection. Context errors are now treated as caller-initiated and do not trigger connection failure handling.
+
+### Changed
+- **Context Propagation in Unsubscribe**: `Sub.Unsubscribe(ctx)` now threads the caller's `context.Context` all the way through to the Redis command, enabling cancellation and deadline control.
+  - Added `ctx` field to internal `command` struct to carry context across the event loop channel boundary
+  - `sendRedisCommand` uses the command's context instead of `context.Background()`
+  - `unsubscribeSubscription` now returns the first `sendCommand` error instead of silently discarding errors
+  - Subscribe path also propagates context to the command struct
+  - Topology resubscribe commands now carry their timeout context in the command struct
+  - Added `migrationTimeout` to `getPubSubForHashslot` call during topology resubscribe to prevent indefinite blocking
+
 ### Added
 - **Comprehensive Documentation Improvements**: Major enhancement to all documentation types
   - **Troubleshooting Guide**: Added new troubleshooting section to README.md covering common issues (messages not received, slow delivery, migration handling, memory leaks) with diagnostics and solutions
