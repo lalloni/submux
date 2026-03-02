@@ -697,9 +697,9 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 			// Recreate subscriptions on new node
 			// Get new PubSub for the hashslot (will use new node)
 			ctx, cancel := context.WithTimeout(context.Background(), tm.config.migrationTimeout)
-			defer cancel()
 			newPubsub, err := tm.subMux.pool.getPubSubForHashslot(ctx, migration.hashslot)
 			if err != nil {
+				cancel() // Release timer before continue; defer would leak across loop iterations
 				// Log error and continue with other subscriptions
 				tm.config.logger.Error("submux: failed to get PubSub for migrated hashslot", "hashslot", migration.hashslot, "error", err)
 				// Report progress even on error
@@ -780,6 +780,7 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 					processedCount.Add(1)
 				}
 			}
+			cancel() // Release timer at end of iteration; defer would leak across loop iterations
 		}
 	}
 }
