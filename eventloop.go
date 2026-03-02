@@ -78,7 +78,10 @@ func runEventLoop(meta *pubSubMetadata) {
 
 // sendRedisCommand sends a command to Redis using the PubSub connection.
 func sendRedisCommand(meta *pubSubMetadata, cmd *command) error {
-	ctx := context.Background()
+	ctx := cmd.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	// Convert []any to []string
 	args := make([]string, len(cmd.args))

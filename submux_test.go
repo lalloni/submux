@@ -463,3 +463,248 @@ func TestSubMux_Unsubscribe_ClosedSubMux(t *testing.T) {
 		t.Errorf("Unsubscribe on closed SubMux returned error %v, want %v", err, ErrClosed)
 	}
 }
+
+func TestUnsubscribe_ContextCancellation(t *testing.T) {
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:        []string{"localhost:7000"},
+		DialTimeout:  100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	subMux, err := New(clusterClient)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	defer subMux.Close()
+
+	// Create a fake PubSub and register metadata with a full cmdCh (buffer 1, pre-filled)
+	fakePubSub := &redis.PubSub{}
+	cmdCh := make(chan *command, 1)
+	cmdCh <- &command{} // Fill the buffer so next send blocks
+
+	meta := &pubSubMetadata{
+		subscriptions: make(map[string][]*subscription),
+		cmdCh:         cmdCh,
+		done:          make(chan struct{}),
+	}
+
+	internalSub := &subscription{
+		channel:   "test-channel",
+		subType:   subTypeSubscribe,
+		pubsub:    fakePubSub,
+		state:     subStateActive,
+		confirmCh: make(chan error, 1),
+	}
+
+	// Register in pool metadata
+	subMux.pool.mu.Lock()
+	subMux.pool.pubSubMetadata[fakePubSub] = meta
+	subMux.pool.mu.Unlock()
+
+	meta.addSubscription(internalSub)
+
+	// Register in global subscriptions
+	subMux.mu.Lock()
+	subMux.subscriptions["test-channel"] = append(subMux.subscriptions["test-channel"], internalSub)
+	subMux.mu.Unlock()
+
+	sub := &Sub{
+		subMux: subMux,
+		subs:   []*subscription{internalSub},
+	}
+
+	// Use an already-canceled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = sub.Unsubscribe(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Unsubscribe with canceled context: got %v, want %v", err, context.Canceled)
+	}
+}
+
+func TestUnsubscribe_ContextTimeout(t *testing.T) {
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:        []string{"localhost:7000"},
+		DialTimeout:  100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	subMux, err := New(clusterClient)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	defer subMux.Close()
+
+	// Create metadata with an unbuffered cmdCh (will always block on send)
+	fakePubSub := &redis.PubSub{}
+	cmdCh := make(chan *command) // unbuffered
+
+	meta := &pubSubMetadata{
+		subscriptions: make(map[string][]*subscription),
+		cmdCh:         cmdCh,
+		done:          make(chan struct{}),
+	}
+
+	internalSub := &subscription{
+		channel:   "test-channel",
+		subType:   subTypeSubscribe,
+		pubsub:    fakePubSub,
+		state:     subStateActive,
+		confirmCh: make(chan error, 1),
+	}
+
+	subMux.pool.mu.Lock()
+	subMux.pool.pubSubMetadata[fakePubSub] = meta
+	subMux.pool.mu.Unlock()
+
+	meta.addSubscription(internalSub)
+
+	subMux.mu.Lock()
+	subMux.subscriptions["test-channel"] = append(subMux.subscriptions["test-channel"], internalSub)
+	subMux.mu.Unlock()
+
+	sub := &Sub{
+		subMux: subMux,
+		subs:   []*subscription{internalSub},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err = sub.Unsubscribe(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Unsubscribe with timeout context: got %v, want %v", err, context.DeadlineExceeded)
+	}
+}
+
+func TestUnsubscribe_ContextCancellation_StillCleansUp(t *testing.T) {
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:        []string{"localhost:7000"},
+		DialTimeout:  100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	subMux, err := New(clusterClient)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	defer subMux.Close()
+
+	fakePubSub := &redis.PubSub{}
+	cmdCh := make(chan *command, 1)
+	cmdCh <- &command{} // Fill the buffer
+
+	meta := &pubSubMetadata{
+		subscriptions: make(map[string][]*subscription),
+		cmdCh:         cmdCh,
+		done:          make(chan struct{}),
+	}
+
+	internalSub := &subscription{
+		channel:   "test-channel",
+		subType:   subTypeSubscribe,
+		pubsub:    fakePubSub,
+		state:     subStateActive,
+		confirmCh: make(chan error, 1),
+	}
+
+	subMux.pool.mu.Lock()
+	subMux.pool.pubSubMetadata[fakePubSub] = meta
+	subMux.pool.mu.Unlock()
+
+	meta.addSubscription(internalSub)
+
+	subMux.mu.Lock()
+	subMux.subscriptions["test-channel"] = append(subMux.subscriptions["test-channel"], internalSub)
+	subMux.mu.Unlock()
+
+	sub := &Sub{
+		subMux: subMux,
+		subs:   []*subscription{internalSub},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = sub.Unsubscribe(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+
+	// Verify cleanup still happened despite context cancellation
+	if internalSub.getState() != subStateClosed {
+		t.Errorf("subscription state = %v, want %v", internalSub.getState(), subStateClosed)
+	}
+
+	subMux.mu.RLock()
+	_, exists := subMux.subscriptions["test-channel"]
+	subMux.mu.RUnlock()
+	if exists {
+		t.Error("channel should have been removed from subscriptions map")
+	}
+
+	remainingSubs := meta.getSubscriptions("test-channel")
+	if len(remainingSubs) != 0 {
+		t.Errorf("metadata should have 0 subscriptions, got %d", len(remainingSubs))
+	}
+}
+
+func TestUnsubscribe_ContextBackground_Succeeds(t *testing.T) {
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:        []string{"localhost:7000"},
+		DialTimeout:  100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	subMux, err := New(clusterClient)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	defer subMux.Close()
+
+	fakePubSub := &redis.PubSub{}
+	cmdCh := make(chan *command, 1) // buffered, will accept the command
+
+	meta := &pubSubMetadata{
+		subscriptions: make(map[string][]*subscription),
+		cmdCh:         cmdCh,
+		done:          make(chan struct{}),
+	}
+
+	internalSub := &subscription{
+		channel:   "test-channel",
+		subType:   subTypeSubscribe,
+		pubsub:    fakePubSub,
+		state:     subStateActive,
+		confirmCh: make(chan error, 1),
+	}
+
+	subMux.pool.mu.Lock()
+	subMux.pool.pubSubMetadata[fakePubSub] = meta
+	subMux.pool.mu.Unlock()
+
+	meta.addSubscription(internalSub)
+
+	subMux.mu.Lock()
+	subMux.subscriptions["test-channel"] = append(subMux.subscriptions["test-channel"], internalSub)
+	subMux.mu.Unlock()
+
+	sub := &Sub{
+		subMux: subMux,
+		subs:   []*subscription{internalSub},
+	}
+
+	err = sub.Unsubscribe(context.Background())
+	if err != nil {
+		t.Errorf("Unsubscribe with background context: got %v, want nil", err)
+	}
+}

@@ -696,7 +696,8 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 
 			// Recreate subscriptions on new node
 			// Get new PubSub for the hashslot (will use new node)
-			ctx := context.Background()
+			ctx, cancel := context.WithTimeout(context.Background(), tm.config.migrationTimeout)
+			defer cancel()
 			newPubsub, err := tm.subMux.pool.getPubSubForHashslot(ctx, migration.hashslot)
 			if err != nil {
 				// Log error and continue with other subscriptions
@@ -748,16 +749,17 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 						defer wg.Done()
 						defer counter.Add(1)
 
+						// Use a separate context for the command
+						cmdCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+						defer cancel()
+
 						cmd := &command{
+							ctx:      cmdCtx,
 							cmd:      cName,
 							args:     []any{chName},
 							sub:      s,
 							response: make(chan error, 1),
 						}
-
-						// Use a separate context for the command
-						cmdCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-						defer cancel()
 
 						if err := m.sendCommand(cmdCtx, cmd); err != nil {
 							m.logger.Error("submux: failed to send resubscribe command", "channel", chName, "error", err)

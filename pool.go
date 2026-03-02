@@ -46,6 +46,7 @@ const (
 // The event loop processes commands from cmdCh and sends errors (if any) back
 // via the response channel.
 type command struct {
+	ctx      context.Context // carries caller context across the cmdCh channel boundary
 	cmd      string
 	args     []any
 	sub      *subscription

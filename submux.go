@@ -329,7 +329,7 @@ func (sm *SubMux) subscribe(ctx context.Context, channels []string, subType subs
 		internalSub, err := sm.subscribeToChannel(ctx, channel, subType, cmdName, callback)
 		if err != nil {
 			// If we fail partway through, unsubscribe what we've already subscribed to
-			sm.unsubscribeSubscription(sub)
+			sm.unsubscribeSubscription(ctx, sub)
 			return nil, fmt.Errorf("failed to subscribe to channel %s: %w", channel, err)
 		}
 		sub.subs = append(sub.subs, internalSub)
@@ -391,6 +391,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 
 		// Create and send subscription command
 		cmd := &command{
+			ctx:      ctx,
 			cmd:      cmdName,
 			args:     []any{channel},
 			sub:      sub,
@@ -469,11 +470,11 @@ func (s *Sub) Unsubscribe(ctx context.Context) error {
 	if s == nil || s.subMux == nil {
 		return nil
 	}
-	return s.subMux.unsubscribeSubscription(s)
+	return s.subMux.unsubscribeSubscription(ctx, s)
 }
 
 // unsubscribeSubscription unsubscribes all internal subscriptions in a Subscription.
-func (sm *SubMux) unsubscribeSubscription(sub *Sub) error {
+func (sm *SubMux) unsubscribeSubscription(ctx context.Context, sub *Sub) error {
 	if sub == nil || len(sub.subs) == 0 {
 		return nil
 	}
@@ -532,6 +533,7 @@ func (sm *SubMux) unsubscribeSubscription(sub *Sub) error {
 	sm.mu.Unlock()
 
 	// Send UNSUBSCRIBE commands and remove from PubSub metadata
+	var firstErr error
 	for channel, internalSubs := range subsByChannel {
 		if len(internalSubs) == 0 {
 			continue
@@ -563,14 +565,16 @@ func (sm *SubMux) unsubscribeSubscription(sub *Sub) error {
 		// Only send UNSUBSCRIBE command if this is the last subscription for this channel
 		if channelsToUnsub[channel] {
 			cmd := &command{
+				ctx:      ctx,
 				cmd:      cmdName,
 				args:     []any{channel},
 				sub:      firstSub,
 				response: make(chan error, 1),
 			}
 
-			// Send command (ignore errors - we'll still remove from metadata)
-			_ = meta.sendCommand(context.Background(), cmd)
+			if err := meta.sendCommand(ctx, cmd); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 
 		// Remove all subscriptions from PubSub metadata
@@ -579,7 +583,7 @@ func (sm *SubMux) unsubscribeSubscription(sub *Sub) error {
 		}
 	}
 
-	return nil
+	return firstErr
 }
 
 // removeSubscriptionFromMap removes a subscription from the global subscriptions map.

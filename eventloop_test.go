@@ -974,6 +974,7 @@ func TestSendRedisCommand_AllCommandTypes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cmd := &command{
+				ctx:  context.Background(),
 				cmd:  tt.cmdType,
 				args: []any{"test-channel"},
 			}
@@ -1006,6 +1007,7 @@ func TestSendRedisCommand_UnknownCommand(t *testing.T) {
 	}
 
 	cmd := &command{
+		ctx:  context.Background(),
 		cmd:  "INVALID_COMMAND",
 		args: []any{"test-channel"},
 	}
@@ -1040,6 +1042,7 @@ func TestSendRedisCommand_RedirectDetection(t *testing.T) {
 	}
 
 	cmd := &command{
+		ctx:  context.Background(),
 		cmd:  cmdSubscribe,
 		args: []any{"test-channel"},
 	}
