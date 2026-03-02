@@ -6,6 +6,7 @@ All notable changes to the submux project will be documented in this file.
 
 ### Fixed
 - **Event loop no longer treats context cancellation as connection failure**: When `sendRedisCommand` returned `context.Canceled` or `context.DeadlineExceeded` (e.g., from an unsubscribe with a tight deadline), the event loop incorrectly marked the entire PubSub connection as failed and exited, killing all subscriptions sharing that connection. Context errors are now treated as caller-initiated and do not trigger connection failure handling.
+- **Partial subscribe cleanup now uses fresh context**: When subscribing to multiple channels fails partway through (e.g., due to context deadline), the cleanup `unsubscribeSubscription` call previously used the same expired `ctx`. UNSUBSCRIBE commands would fail, leaving orphaned server-side subscriptions. Cleanup now uses `context.Background()` to guarantee UNSUBSCRIBE commands are sent.
 
 ### Changed
 - **Context Propagation in Unsubscribe**: `Sub.Unsubscribe(ctx)` now threads the caller's `context.Context` all the way through to the Redis command, enabling cancellation and deadline control.

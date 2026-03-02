@@ -328,8 +328,10 @@ func (sm *SubMux) subscribe(ctx context.Context, channels []string, subType subs
 	for _, channel := range channels {
 		internalSub, err := sm.subscribeToChannel(ctx, channel, subType, cmdName, callback)
 		if err != nil {
-			// If we fail partway through, unsubscribe what we've already subscribed to
-			sm.unsubscribeSubscription(ctx, sub)
+			// If we fail partway through, unsubscribe what we've already subscribed to.
+			// Use context.Background() for cleanup: ctx may be expired (causing the failure),
+			// and we must guarantee UNSUBSCRIBE commands are sent to avoid orphaned server-side subscriptions.
+			sm.unsubscribeSubscription(context.Background(), sub)
 			return nil, fmt.Errorf("failed to subscribe to channel %s: %w", channel, err)
 		}
 		sub.subs = append(sub.subs, internalSub)
