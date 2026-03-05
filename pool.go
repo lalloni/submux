@@ -87,6 +87,9 @@ type pubSubMetadata struct {
 	// Canceled when SubMux.Close() is called.
 	lifecycleCtx context.Context
 
+	// callbackWg tracks fallback callback goroutines for this connection.
+	callbackWg *sync.WaitGroup
+
 	// nodeAddr is the address of the Redis node.
 	nodeAddr string
 
@@ -608,9 +611,11 @@ func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*
 
 	var workerPool *WorkerPool
 	var lifecycleCtx context.Context
+	var callbackWg *sync.WaitGroup
 	if sm != nil {
 		workerPool = sm.workerPool
 		lifecycleCtx = sm.lifecycleCtx
+		callbackWg = &sm.callbackWg
 	}
 	if lifecycleCtx == nil {
 		lifecycleCtx = context.Background()
@@ -623,6 +628,7 @@ func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*
 		recorder:             p.config.recorder,
 		workerPool:           workerPool,
 		lifecycleCtx:         lifecycleCtx,
+		callbackWg:           callbackWg,
 		nodeAddr:             nodeAddr,
 		subscriptions:        make(map[string][]*subscription),
 		pendingSubscriptions: make(map[string]*subscription),

@@ -198,6 +198,9 @@ type SubMux struct {
 	// closed indicates if SubMux is closed.
 	closed bool
 
+	// callbackWg tracks fallback callback goroutines (when worker pool rejects).
+	callbackWg sync.WaitGroup
+
 	// closeOnce ensures Close is only called once.
 	closeOnce sync.Once
 }
@@ -688,6 +691,9 @@ func (sm *SubMux) Close() error {
 		if sm.workerPool != nil {
 			sm.workerPool.Stop()
 		}
+
+		// Wait for any fallback callback goroutines to complete
+		sm.callbackWg.Wait()
 
 		// Clear subscriptions
 		sm.mu.Lock()

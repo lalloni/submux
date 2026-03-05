@@ -3,13 +3,15 @@ package submux
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 )
 
 // invokeCallback safely invokes a callback function with panic recovery.
 // The callback is invoked asynchronously via the worker pool.
 // If pool is nil, falls back to spawning a new goroutine (for backwards compatibility).
-func invokeCallback(logger *slog.Logger, recorder metricsRecorder, pool *WorkerPool, ctx context.Context, callback MessageCallback, msg *Message) {
+// If callbackWg is non-nil, fallback goroutines are tracked so Close() can wait for them.
+func invokeCallback(logger *slog.Logger, recorder metricsRecorder, pool *WorkerPool, callbackWg *sync.WaitGroup, ctx context.Context, callback MessageCallback, msg *Message) {
 	// Use worker pool if available, otherwise fall back to goroutine
 	if pool != nil {
 		submitTime := time.Now()
@@ -32,15 +34,27 @@ func invokeCallback(logger *slog.Logger, recorder metricsRecorder, pool *WorkerP
 				// Blocked but eventually succeeded
 				recorder.recordWorkerPoolSubmission(true)
 			} else {
-				// Pool is stopped or context canceled - record drop and run directly
+				// Pool is stopped or context canceled - record drop and run in fallback goroutine
 				recorder.recordWorkerPoolDropped()
+				if callbackWg != nil {
+					callbackWg.Add(1)
+				}
 				go func() {
+					if callbackWg != nil {
+						defer callbackWg.Done()
+					}
 					executeCallback(logger, recorder, ctx, callback, msg)
 				}()
 			}
 		}
 	} else {
+		if callbackWg != nil {
+			callbackWg.Add(1)
+		}
 		go func() {
+			if callbackWg != nil {
+				defer callbackWg.Done()
+			}
 			executeCallback(logger, recorder, ctx, callback, msg)
 		}()
 	}

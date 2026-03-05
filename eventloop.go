@@ -225,7 +225,7 @@ func handleMessageFromPubSub(meta *pubSubMetadata, channel, payload string) erro
 	}
 
 	for _, sub := range subs {
-		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.lifecycleCtx, sub.callback, msg)
+		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.callbackWg, meta.lifecycleCtx, sub.callback, msg)
 	}
 	return nil
 }
@@ -252,7 +252,7 @@ func handlePMessageFromPubSub(meta *pubSubMetadata, pattern, channel, payload st
 	}
 
 	for _, sub := range subs {
-		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.lifecycleCtx, sub.callback, msg)
+		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.callbackWg, meta.lifecycleCtx, sub.callback, msg)
 	}
 	return nil
 }
@@ -281,7 +281,7 @@ func handleSMessageFromPubSub(meta *pubSubMetadata, channel, payload string) err
 	}
 
 	for _, sub := range subs {
-		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.lifecycleCtx, sub.callback, msg)
+		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.callbackWg, meta.lifecycleCtx, sub.callback, msg)
 	}
 	return nil
 }
@@ -307,6 +307,6 @@ func notifySubscriptionsOfFailure(meta *pubSubMetadata, err error) {
 			Timestamp:        time.Now(),
 			SubscriptionType: sub.subType,
 		}
-		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.lifecycleCtx, sub.callback, msg)
+		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.callbackWg, meta.lifecycleCtx, sub.callback, msg)
 	}
 }

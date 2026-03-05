@@ -118,6 +118,7 @@ func TestInvokeCallback_GoroutineLeaks(t *testing.T) {
 			nil, // logger
 			&noopMetrics{},
 			pool,
+			nil, // callbackWg
 			pool.Context(),
 			func(ctx context.Context, msg *Message) {
 				wg.Done()
@@ -161,6 +162,7 @@ func TestInvokeCallback_UnboundedWithoutPool(t *testing.T) {
 			nil, // logger
 			&noopMetrics{},
 			nil, // no pool - falls back to goroutines
+			nil, // callbackWg
 			nil, // no context
 			func(ctx context.Context, msg *Message) {
 				wg.Done()

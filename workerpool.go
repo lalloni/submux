@@ -126,6 +126,13 @@ func (wp *WorkerPool) SubmitWithContext(ctx context.Context, task func()) bool {
 // TrySubmit attempts to submit a task without blocking.
 // Returns true if the task was submitted, false if the queue is full or the pool is stopped.
 func (wp *WorkerPool) TrySubmit(task func()) bool {
+	// Check context first to avoid panic on closed channel
+	select {
+	case <-wp.ctx.Done():
+		return false
+	default:
+	}
+
 	select {
 	case wp.taskQueue <- task:
 		return true
