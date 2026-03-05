@@ -1259,9 +1259,60 @@ func TestResubscribeOnNewNode_EmptySubscriptions(t *testing.T) {
 	var counter atomic.Int64
 	var wg sync.WaitGroup
 
+	ctx := context.Background()
 	// Should not panic with empty subscriptions
-	tm.resubscribeOnNewNode(nil, migration, &counter, &wg)
-	tm.resubscribeOnNewNode([]*subscription{}, migration, &counter, &wg)
+	tm.resubscribeOnNewNode(ctx, nil, migration, &counter, &wg)
+	tm.resubscribeOnNewNode(ctx, []*subscription{}, migration, &counter, &wg)
+}
+
+func TestResubscribeOnNewNode_RespectsParentContext(t *testing.T) {
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:       []string{"localhost:7000"},
+		DialTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	cfg := defaultConfig()
+	cfg.recorder = &noopMetrics{}
+	cfg.autoResubscribe = true
+	pool := newPubSubPool(clusterClient, cfg)
+
+	sm := &SubMux{
+		pool:          pool,
+		subscriptions: make(map[string][]*subscription),
+	}
+	pool.setSubMux(sm)
+
+	tm := newTopologyMonitor(clusterClient, cfg, sm)
+	pool.setTopologyMonitor(tm)
+	sm.topologyMonitor = tm
+
+	sub := &subscription{
+		channel:  "test-channel",
+		subType:  subTypeSubscribe,
+		state:    subStateClosed,
+		hashslot: 100,
+	}
+
+	var processedCount atomic.Int64
+	var wg sync.WaitGroup
+
+	// Use an already-cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	migration := hashslotMigration{hashslot: 100, oldNode: "old:7000", newNode: "new:7001"}
+
+	// With cancelled ctx, resubscribeOnNewNode should skip the resubscription
+	// because getPubSubForHashslot should fail with context error.
+	tm.resubscribeOnNewNode(ctx, []*subscription{sub}, migration, &processedCount, &wg)
+
+	wg.Wait()
+
+	// The subscription should have been counted as processed (skipped due to ctx)
+	if processedCount.Load() != 1 {
+		t.Errorf("expected processedCount=1, got %d", processedCount.Load())
+	}
 }
 
 // Additional topology edge case tests

@@ -640,6 +640,12 @@ func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscripti
 
 	totalSubs := int64(len(subs))
 
+	// Create a single migration context with the configured timeout.
+	// All per-command contexts derive from this, so the overall migration
+	// timeout is enforced structurally rather than being advisory-only.
+	migrationCtx, migrationCancel := context.WithTimeout(context.Background(), migrationTimeout)
+	defer migrationCancel()
+
 	// Progress monitoring goroutine
 	go func() {
 		ticker := time.NewTicker(stallCheckInterval)
@@ -676,8 +682,8 @@ func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscripti
 		}
 	}()
 
-	// Perform resubscription
-	tm.resubscribeOnNewNode(subs, migration, &processedCount, &wg)
+	// Perform resubscription with the migration context
+	tm.resubscribeOnNewNode(migrationCtx, subs, migration, &processedCount, &wg)
 
 	// Wait for all spawned goroutines to complete before signaling done
 	wg.Wait()
@@ -692,7 +698,9 @@ func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscripti
 }
 
 // resubscribeOnNewNode recreates subscriptions on the new node after migration.
-func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration hashslotMigration, processedCount *atomic.Int64, wg *sync.WaitGroup) {
+// The ctx parameter is the migration context — it enforces the overall migration timeout.
+// Per-command contexts are derived from it.
+func (tm *topologyMonitor) resubscribeOnNewNode(ctx context.Context, subs []*subscription, migration hashslotMigration, processedCount *atomic.Int64, wg *sync.WaitGroup) {
 	// Group subscriptions by channel (to avoid duplicate SUBSCRIBE commands)
 	channelsByType := make(map[subscriptionType]map[string][]*subscription)
 	for _, sub := range subs {
@@ -705,6 +713,12 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 	// For each subscription type and channel, recreate subscriptions
 	for subType, channels := range channelsByType {
 		for channel, channelSubs := range channels {
+			// Check if migration context expired
+			if ctx.Err() != nil {
+				processedCount.Add(int64(len(channelSubs)))
+				continue
+			}
+
 			// Unsubscribe from old connection (if still active)
 			for _, sub := range channelSubs {
 				meta := tm.subMux.pool.getMetadata(sub.pubsub)
@@ -715,11 +729,14 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 			}
 
 			// Recreate subscriptions on new node
-			// Get new PubSub for the hashslot (will use new node)
-			ctx, cancel := context.WithTimeout(context.Background(), tm.config.migrationTimeout)
+			// Use migration ctx for connection creation (replaces per-iteration timeout)
 			newPubsub, err := tm.subMux.pool.getPubSubForHashslot(ctx, migration.hashslot)
 			if err != nil {
-				cancel() // Release timer before continue; defer would leak across loop iterations
+				if ctx.Err() != nil {
+					// Migration context expired — skip remaining
+					processedCount.Add(int64(len(channelSubs)))
+					return
+				}
 				// Log error and continue with other subscriptions
 				tm.config.logger.Error("submux: failed to get PubSub for migrated hashslot", "hashslot", migration.hashslot, "error", err)
 				// Report progress even on error
@@ -769,9 +786,9 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 						defer wg.Done()
 						defer counter.Add(1)
 
-						// Use a separate context for the command
-						cmdCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-						defer cancel()
+						// Derive per-command context from migration context
+						cmdCtx, cmdCancel := context.WithTimeout(ctx, 10*time.Second)
+						defer cmdCancel()
 
 						cmd := &command{
 							ctx:      cmdCtx,
@@ -800,7 +817,6 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 					processedCount.Add(1)
 				}
 			}
-			cancel() // Release timer at end of iteration; defer would leak across loop iterations
 		}
 	}
 }
