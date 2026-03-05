@@ -32,7 +32,7 @@ func TestInvokeCallback_Normal(t *testing.T) {
 		Payload: "hello",
 	}
 
-	invokeCallback(logger, &noopMetrics{}, nil, nil, context.Background(), callback, testMsg)
+	invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, callback, testMsg)
 
 	// Wait for async callback
 	wg.Wait()
@@ -65,7 +65,7 @@ func TestInvokeCallback_PanicRecovery(t *testing.T) {
 	}
 
 	// This should not panic the test - panic should be recovered
-	invokeCallback(logger, &noopMetrics{}, nil, nil, context.Background(), panicCallback, testMsg)
+	invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, panicCallback, testMsg)
 
 	// Wait for callback to complete
 	<-done
@@ -85,7 +85,7 @@ func TestInvokeCallback_PanicWithNil(t *testing.T) {
 	testMsg := &Message{Type: MessageTypeMessage}
 
 	// Should handle panic(nil) gracefully
-	invokeCallback(logger, &noopMetrics{}, nil, nil, context.Background(), panicCallback, testMsg)
+	invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, panicCallback, testMsg)
 
 	<-done
 	// If we reach here, the test passes
@@ -102,7 +102,7 @@ func TestInvokeCallback_PanicWithError(t *testing.T) {
 
 	testMsg := &Message{Type: MessageTypeMessage}
 
-	invokeCallback(logger, &noopMetrics{}, nil, nil, context.Background(), panicCallback, testMsg)
+	invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, panicCallback, testMsg)
 
 	<-done
 	// If we reach here, the test passes
@@ -122,7 +122,7 @@ func TestInvokeCallback_NilMessage(t *testing.T) {
 		wg.Done()
 	}
 
-	invokeCallback(logger, &noopMetrics{}, nil, nil, context.Background(), callback, nil)
+	invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, callback, nil)
 
 	wg.Wait()
 
@@ -146,13 +146,13 @@ func TestInvokeCallback_Concurrency(t *testing.T) {
 	wg.Add(numCalls)
 
 	// Invoke many callbacks concurrently
-	for i := 0; i < numCalls; i++ {
+	for range numCalls {
 		testMsg := &Message{
 			Type:    MessageTypeMessage,
 			Channel: "concurrent",
 			Payload: "test",
 		}
-		invokeCallback(logger, &noopMetrics{}, nil, nil, context.Background(), callback, testMsg)
+		invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, callback, testMsg)
 	}
 
 	// Wait with timeout
@@ -186,20 +186,20 @@ func TestInvokeCallback_PanicDoesNotAffectOthers(t *testing.T) {
 	wg.Add(numSuccess)
 
 	// First, invoke callbacks that will panic
-	for i := 0; i < numPanics; i++ {
+	for range numPanics {
 		panicCallback := func(ctx context.Context, msg *Message) {
 			panic("intentional panic")
 		}
-		invokeCallback(logger, &noopMetrics{}, nil, nil, context.Background(), panicCallback, &Message{Type: MessageTypeMessage})
+		invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, panicCallback, &Message{Type: MessageTypeMessage})
 	}
 
 	// Then, invoke successful callbacks
-	for i := 0; i < numSuccess; i++ {
+	for range numSuccess {
 		successCallback := func(ctx context.Context, msg *Message) {
 			successCount.Add(1)
 			wg.Done()
 		}
-		invokeCallback(logger, &noopMetrics{}, nil, nil, context.Background(), successCallback, &Message{Type: MessageTypeMessage})
+		invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, successCallback, &Message{Type: MessageTypeMessage})
 	}
 
 	// Wait with timeout
@@ -246,7 +246,7 @@ func TestInvokeCallback_MessageTypes(t *testing.T) {
 			}
 
 			testMsg := &Message{Type: tt.msgType}
-			invokeCallback(logger, &noopMetrics{}, nil, nil, context.Background(), callback, testMsg)
+			invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, callback, testMsg)
 
 			done := make(chan struct{})
 			go func() {
@@ -277,7 +277,7 @@ func TestInvokeCallback_SlowCallback(t *testing.T) {
 	}
 
 	start := time.Now()
-	invokeCallback(logger, &noopMetrics{}, nil, nil, context.Background(), slowCallback, &Message{Type: MessageTypeMessage})
+	invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, slowCallback, &Message{Type: MessageTypeMessage})
 	elapsed := time.Since(start)
 
 	// invokeCallback should return immediately (async)
@@ -312,13 +312,13 @@ func TestInvokeCallback_WithWorkerPool(t *testing.T) {
 	wg.Add(numCalls)
 
 	// Invoke callbacks using worker pool
-	for i := 0; i < numCalls; i++ {
+	for range numCalls {
 		testMsg := &Message{
 			Type:    MessageTypeMessage,
 			Channel: "pool-test",
 			Payload: "test",
 		}
-		invokeCallback(logger, &noopMetrics{}, pool, nil, context.Background(), callback, testMsg)
+		invokeCallback(context.Background(), logger, &noopMetrics{}, pool, nil, callback, testMsg)
 	}
 
 	// Wait with timeout
@@ -357,7 +357,7 @@ func TestInvokeCallback_ContextCanceled(t *testing.T) {
 	// Cancel context before invoking callback
 	cancel()
 
-	invokeCallback(logger, &noopMetrics{}, nil, nil, ctx, callback, &Message{Type: MessageTypeMessage})
+	invokeCallback(ctx, logger, &noopMetrics{}, nil, nil, callback, &Message{Type: MessageTypeMessage})
 
 	wg.Wait()
 
@@ -395,7 +395,7 @@ func TestExecuteCallback_NilMessage(t *testing.T) {
 	}
 
 	// Should not panic with nil message
-	executeCallback(logger, &noopMetrics{}, context.Background(), callback, nil)
+	executeCallback(context.Background(), logger, &noopMetrics{}, callback, nil)
 
 	if !calledWithNil {
 		t.Error("callback should have been called with nil message")
@@ -422,7 +422,7 @@ func TestInvokeCallback_WorkerPoolFull_FallbackToGoroutine(t *testing.T) {
 			callCount.Add(1)
 			wg.Done()
 		}
-		invokeCallback(logger, &noopMetrics{}, pool, nil, context.Background(), callback, &Message{Type: MessageTypeMessage})
+		invokeCallback(context.Background(), logger, &noopMetrics{}, pool, nil, callback, &Message{Type: MessageTypeMessage})
 	}
 
 	// Wait with timeout for all callbacks
@@ -461,11 +461,11 @@ func TestClose_WaitsForFallbackCallbacks(t *testing.T) {
 
 	// Invoke a callback with nil pool to force fallback goroutine path
 	invokeCallback(
+		subMux.lifecycleCtx,
 		subMux.config.logger,
 		subMux.config.recorder,
 		nil, // nil pool forces fallback goroutine
 		&subMux.callbackWg,
-		subMux.lifecycleCtx,
 		func(ctx context.Context, msg *Message) {
 			callbackStarted.Done()
 			time.Sleep(100 * time.Millisecond)
@@ -501,7 +501,7 @@ func TestInvokeCallback_FallbackGoroutineTracked(t *testing.T) {
 	pool.Start()
 	pool.Stop() // Stop pool so Submit fails
 
-	invokeCallback(logger, &noopMetrics{}, pool, &wg, context.Background(), callback, &Message{Type: MessageTypeMessage})
+	invokeCallback(context.Background(), logger, &noopMetrics{}, pool, &wg, callback, &Message{Type: MessageTypeMessage})
 
 	// wg.Wait() should block until the fallback goroutine completes
 	wg.Wait()

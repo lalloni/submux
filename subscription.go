@@ -16,6 +16,34 @@ const (
 	subTypeSSubscribe
 )
 
+// subscribeCommandName returns the Redis command name for subscribing with this type.
+func (st subscriptionType) subscribeCommandName() string {
+	switch st {
+	case subTypeSubscribe:
+		return cmdSubscribe
+	case subTypePSubscribe:
+		return cmdPSubscribe
+	case subTypeSSubscribe:
+		return cmdSSubscribe
+	default:
+		return ""
+	}
+}
+
+// unsubscribeCommandName returns the Redis command name for unsubscribing with this type.
+func (st subscriptionType) unsubscribeCommandName() string {
+	switch st {
+	case subTypeSubscribe:
+		return cmdUnsubscribe
+	case subTypePSubscribe:
+		return cmdPUnsubscribe
+	case subTypeSSubscribe:
+		return cmdSUnsubscribe
+	default:
+		return ""
+	}
+}
+
 // subscriptionState represents the state of a subscription.
 //
 // A subscription transitions through these states during its lifecycle:

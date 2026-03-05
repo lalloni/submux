@@ -309,15 +309,8 @@ func (sm *SubMux) subscribe(ctx context.Context, channels []string, subType subs
 	}
 
 	// Determine command name based on subscription type
-	var cmdName string
-	switch subType {
-	case subTypeSubscribe:
-		cmdName = cmdSubscribe
-	case subTypePSubscribe:
-		cmdName = cmdPSubscribe
-	case subTypeSSubscribe:
-		cmdName = cmdSSubscribe
-	default:
+	cmdName := subType.subscribeCommandName()
+	if cmdName == "" {
 		return nil, fmt.Errorf("invalid subscription type: %d", subType)
 	}
 
@@ -487,7 +480,7 @@ func (sm *SubMux) unsubscribeSubscription(ctx context.Context, sub *Sub) error {
 	sm.mu.Lock()
 	if sm.closed {
 		sm.mu.Unlock()
-		return fmt.Errorf("%w", ErrClosed)
+		return ErrClosed
 	}
 	sm.mu.Unlock()
 
@@ -564,15 +557,7 @@ func (sm *SubMux) unsubscribeSubscription(ctx context.Context, sub *Sub) error {
 		}
 
 		// Determine unsubscribe command based on subscription type
-		var cmdName string
-		switch firstSub.subType {
-		case subTypeSubscribe:
-			cmdName = cmdUnsubscribe
-		case subTypePSubscribe:
-			cmdName = cmdPUnsubscribe
-		case subTypeSSubscribe:
-			cmdName = cmdSUnsubscribe
-		}
+		cmdName := firstSub.subType.unsubscribeCommandName()
 
 		// Mark all subscriptions as closed
 		for _, internalSub := range internalSubs {

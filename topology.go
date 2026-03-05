@@ -501,126 +501,71 @@ func (tm *topologyMonitor) findAffectedSubscriptions(hashslot int) []*subscripti
 	return affected
 }
 
+// broadcastSignal sends a signal message to each subscription's callback.
+// It retrieves the worker pool, callback WaitGroup, and lifecycle context from subMux,
+// falling back to safe defaults when subMux is nil (e.g. in tests).
+func (tm *topologyMonitor) broadcastSignal(subs []*subscription, signal *SignalInfo) {
+	var workerPool *WorkerPool
+	var callbackWg *sync.WaitGroup
+	var lifecycleCtx context.Context
+	if tm.subMux != nil {
+		workerPool = tm.subMux.workerPool
+		callbackWg = &tm.subMux.callbackWg
+		lifecycleCtx = tm.subMux.lifecycleCtx
+	}
+	if lifecycleCtx == nil {
+		lifecycleCtx = context.Background()
+	}
+
+	timestamp := time.Now()
+	for _, sub := range subs {
+		msg := &Message{
+			Type:             MessageTypeSignal,
+			Signal:           signal,
+			Timestamp:        timestamp,
+			SubscriptionType: sub.subType,
+		}
+		invokeCallback(lifecycleCtx, tm.config.logger, tm.config.recorder, workerPool, callbackWg, sub.callback, msg)
+	}
+}
+
 // sendSignalMessages sends signal messages to affected subscriptions.
 func (tm *topologyMonitor) sendSignalMessages(subs []*subscription, migration hashslotMigration) {
-	signal := &SignalInfo{
+	tm.broadcastSignal(subs, &SignalInfo{
 		EventType: EventMigration,
 		Hashslot:  migration.hashslot,
 		OldNode:   migration.oldNode,
 		NewNode:   migration.newNode,
 		Details:   fmt.Sprintf("Hashslot %d migrated from %s to %s", migration.hashslot, migration.oldNode, migration.newNode),
-	}
-
-	timestamp := time.Now()
-
-	// Get worker pool, callback WaitGroup, and lifecycle context from subMux (may be nil in tests)
-	var workerPool *WorkerPool
-	var callbackWg *sync.WaitGroup
-	var lifecycleCtx context.Context
-	if tm.subMux != nil {
-		workerPool = tm.subMux.workerPool
-		callbackWg = &tm.subMux.callbackWg
-		lifecycleCtx = tm.subMux.lifecycleCtx
-	}
-	if lifecycleCtx == nil {
-		lifecycleCtx = context.Background()
-	}
-
-	// Send to all affected subscriptions
-	// Create a separate message copy for each subscription to avoid race conditions
-	for _, sub := range subs {
-		msg := &Message{
-			Type:             MessageTypeSignal,
-			Signal:           signal,
-			Timestamp:        timestamp,
-			SubscriptionType: sub.subType,
-		}
-		invokeCallback(tm.config.logger, tm.config.recorder, workerPool, callbackWg, lifecycleCtx, sub.callback, msg)
-	}
+	})
 }
 
 // sendMigrationTimeoutSignal sends a signal message when migration resubscription exceeds the maximum duration.
 func (tm *topologyMonitor) sendMigrationTimeoutSignal(subs []*subscription, migration hashslotMigration, duration time.Duration) {
-	// Record migration timeout metric
 	tm.config.recorder.recordMigrationTimeout()
 
-	signal := &SignalInfo{
+	tm.broadcastSignal(subs, &SignalInfo{
 		EventType: EventMigrationTimeout,
 		Hashslot:  migration.hashslot,
 		OldNode:   migration.oldNode,
 		NewNode:   migration.newNode,
 		Details:   fmt.Sprintf("Hashslot %d migration resubscription exceeded maximum duration of %v. Subscribers may need to manually resubscribe.", migration.hashslot, duration),
-	}
-
-	timestamp := time.Now()
-
-	// Get worker pool, callback WaitGroup, and lifecycle context from subMux (may be nil in tests)
-	var workerPool *WorkerPool
-	var callbackWg *sync.WaitGroup
-	var lifecycleCtx context.Context
-	if tm.subMux != nil {
-		workerPool = tm.subMux.workerPool
-		callbackWg = &tm.subMux.callbackWg
-		lifecycleCtx = tm.subMux.lifecycleCtx
-	}
-	if lifecycleCtx == nil {
-		lifecycleCtx = context.Background()
-	}
-
-	// Send to all affected subscriptions
-	// Create a separate message copy for each subscription to avoid race conditions
-	for _, sub := range subs {
-		msg := &Message{
-			Type:             MessageTypeSignal,
-			Signal:           signal,
-			Timestamp:        timestamp,
-			SubscriptionType: sub.subType,
-		}
-		invokeCallback(tm.config.logger, tm.config.recorder, workerPool, callbackWg, lifecycleCtx, sub.callback, msg)
-	}
+	})
 
 	tm.config.logger.Warn("submux: migration timeout", "hashslot", migration.hashslot, "duration", duration)
 }
 
 // sendMigrationStalledSignal sends a signal message when migration resubscription appears to have stalled.
 func (tm *topologyMonitor) sendMigrationStalledSignal(subs []*subscription, migration hashslotMigration, stallDuration time.Duration) {
-	// Record migration stalled metric
 	tm.config.recorder.recordMigrationStalled()
 
-	signal := &SignalInfo{
+	tm.broadcastSignal(subs, &SignalInfo{
 		EventType: EventMigrationStalled,
 		Hashslot:  migration.hashslot,
 		OldNode:   migration.oldNode,
 		NewNode:   migration.newNode,
 		Details:   fmt.Sprintf("Hashslot %d migration resubscription appears stalled (no progress for %v). Subscribers may need to manually resubscribe.", migration.hashslot, stallDuration),
-	}
-
-	timestamp := time.Now()
-
-	// Get worker pool, callback WaitGroup, and lifecycle context from subMux (may be nil in tests)
-	var workerPool *WorkerPool
-	var callbackWg *sync.WaitGroup
-	var lifecycleCtx context.Context
-	if tm.subMux != nil {
-		workerPool = tm.subMux.workerPool
-		callbackWg = &tm.subMux.callbackWg
-		lifecycleCtx = tm.subMux.lifecycleCtx
-	}
-	if lifecycleCtx == nil {
-		lifecycleCtx = context.Background()
-	}
-
-	// Send to all affected subscriptions
-	// Create a separate message copy for each subscription to avoid race conditions
-	for _, sub := range subs {
-		msg := &Message{
-			Type:             MessageTypeSignal,
-			Signal:           signal,
-			Timestamp:        timestamp,
-			SubscriptionType: sub.subType,
-		}
-		invokeCallback(tm.config.logger, tm.config.recorder, workerPool, callbackWg, lifecycleCtx, sub.callback, msg)
-	}
+	})
 
 	tm.config.logger.Warn("submux: migration stalled", "hashslot", migration.hashslot, "duration", stallDuration)
 }
@@ -764,15 +709,7 @@ func (tm *topologyMonitor) resubscribeOnNewNode(ctx context.Context, subs []*sub
 				meta.addSubscription(sub)
 
 				// Determine command name based on subscription type
-				var cmdName string
-				switch subType {
-				case subTypeSubscribe:
-					cmdName = cmdSubscribe
-				case subTypePSubscribe:
-					cmdName = cmdPSubscribe
-				case subTypeSSubscribe:
-					cmdName = cmdSSubscribe
-				}
+				cmdName := subType.subscribeCommandName()
 
 				// Check if channel is already subscribed on new PubSub
 				// existingSubs now includes the one we just added, so count should be >= 1

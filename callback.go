@@ -11,7 +11,7 @@ import (
 // The callback is invoked asynchronously via the worker pool.
 // If pool is nil, falls back to spawning a new goroutine (for backwards compatibility).
 // If callbackWg is non-nil, fallback goroutines are tracked so Close() can wait for them.
-func invokeCallback(logger *slog.Logger, recorder metricsRecorder, pool *WorkerPool, callbackWg *sync.WaitGroup, ctx context.Context, callback MessageCallback, msg *Message) {
+func invokeCallback(ctx context.Context, logger *slog.Logger, recorder metricsRecorder, pool *WorkerPool, callbackWg *sync.WaitGroup, callback MessageCallback, msg *Message) {
 	// Use worker pool if available, otherwise fall back to goroutine
 	if pool != nil {
 		submitTime := time.Now()
@@ -21,7 +21,7 @@ func invokeCallback(logger *slog.Logger, recorder metricsRecorder, pool *WorkerP
 			waitDuration := time.Since(submitTime)
 			recorder.recordWorkerPoolQueueWait(waitDuration)
 
-			executeCallback(logger, recorder, ctx, callback, msg)
+			executeCallback(ctx, logger, recorder, callback, msg)
 		}
 
 		// Try non-blocking submit first to detect if we would block
@@ -36,33 +36,31 @@ func invokeCallback(logger *slog.Logger, recorder metricsRecorder, pool *WorkerP
 			} else {
 				// Pool is stopped or context canceled - record drop and run in fallback goroutine
 				recorder.recordWorkerPoolDropped()
-				if callbackWg != nil {
-					callbackWg.Add(1)
-				}
-				go func() {
-					if callbackWg != nil {
-						defer callbackWg.Done()
-					}
-					executeCallback(logger, recorder, ctx, callback, msg)
-				}()
+				runFallbackCallback(ctx, callbackWg, logger, recorder, callback, msg)
 			}
 		}
 	} else {
-		if callbackWg != nil {
-			callbackWg.Add(1)
-		}
-		go func() {
-			if callbackWg != nil {
-				defer callbackWg.Done()
-			}
-			executeCallback(logger, recorder, ctx, callback, msg)
-		}()
+		runFallbackCallback(ctx, callbackWg, logger, recorder, callback, msg)
 	}
+}
+
+// runFallbackCallback spawns a goroutine to execute a callback outside the worker pool.
+// If callbackWg is non-nil, the goroutine is tracked so Close() can wait for it.
+func runFallbackCallback(ctx context.Context, callbackWg *sync.WaitGroup, logger *slog.Logger, recorder metricsRecorder, callback MessageCallback, msg *Message) {
+	if callbackWg != nil {
+		callbackWg.Add(1)
+	}
+	go func() {
+		if callbackWg != nil {
+			defer callbackWg.Done()
+		}
+		executeCallback(ctx, logger, recorder, callback, msg)
+	}()
 }
 
 // executeCallback executes a callback with panic recovery and metrics.
 // This is the core callback execution logic extracted for reuse.
-func executeCallback(logger *slog.Logger, recorder metricsRecorder, ctx context.Context, callback MessageCallback, msg *Message) {
+func executeCallback(ctx context.Context, logger *slog.Logger, recorder metricsRecorder, callback MessageCallback, msg *Message) {
 	// Get subscription type (handle nil message)
 	var subType string
 	if msg != nil {
