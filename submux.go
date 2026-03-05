@@ -534,8 +534,20 @@ func (sm *SubMux) unsubscribeSubscription(ctx context.Context, sub *Sub) error {
 	}
 	sm.mu.Unlock()
 
-	// Send UNSUBSCRIBE commands and remove from PubSub metadata
+	// Send UNSUBSCRIBE commands and remove from PubSub metadata.
+	// Structured in 3 phases:
+	//   Phase 1: Queue commands and mark subscriptions as closed
+	//   Phase 2: Wait for responses from event loop
+	//   Phase 3: Clean metadata after response
 	var firstErr error
+	type pendingUnsub struct {
+		meta     *pubSubMetadata
+		subs     []*subscription
+		response chan error
+	}
+	var pending []pendingUnsub
+
+	// Phase 1: Queue commands, mark closed
 	for channel, internalSubs := range subsByChannel {
 		if len(internalSubs) == 0 {
 			continue
@@ -566,22 +578,49 @@ func (sm *SubMux) unsubscribeSubscription(ctx context.Context, sub *Sub) error {
 
 		// Only send UNSUBSCRIBE command if this is the last subscription for this channel
 		if channelsToUnsub[channel] {
+			// Use context.Background() for the UNSUBSCRIBE command: even if the caller's
+			// context is expired, we must guarantee the UNSUBSCRIBE reaches Redis to avoid
+			// orphaned server-side subscriptions. This mirrors the cleanup pattern at subscribe().
 			cmd := &command{
-				ctx:      ctx,
+				ctx:      context.Background(),
 				cmd:      cmdName,
 				args:     []any{channel},
 				sub:      firstSub,
 				response: make(chan error, 1),
 			}
 
-			if err := meta.sendCommand(ctx, cmd); err != nil && firstErr == nil {
-				firstErr = err
+			if err := meta.sendCommand(context.Background(), cmd); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				// Still clean metadata below
+			} else {
+				pending = append(pending, pendingUnsub{meta, internalSubs, cmd.response})
+				continue // Don't clean metadata yet — wait for response first
 			}
 		}
 
-		// Remove all subscriptions from PubSub metadata
+		// No command needed or command failed — clean metadata now
 		for _, internalSub := range internalSubs {
 			meta.removeSubscription(internalSub)
+		}
+	}
+
+	// Phase 2: Wait for responses from event loop
+	for _, p := range pending {
+		select {
+		case err := <-p.response:
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		case <-ctx.Done():
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+		}
+		// Phase 3: Clean metadata after response
+		for _, internalSub := range p.subs {
+			p.meta.removeSubscription(internalSub)
 		}
 	}
 
