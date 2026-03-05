@@ -1464,3 +1464,120 @@ func TestTopologyState_GetAnySlotForNode_ReturnsConsistently(t *testing.T) {
 		t.Errorf("inconsistent slot returned: %d vs %d", slot, slot2)
 	}
 }
+
+func TestTriggerRefresh_TrackedByWaitGroup(t *testing.T) {
+	// Create a topology monitor where refreshTopology blocks on tm.mu
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:       []string{"localhost:7000"},
+		DialTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	cfg := defaultConfig()
+	cfg.recorder = &noopMetrics{}
+	pool := newPubSubPool(clusterClient, cfg)
+	subMux := &SubMux{
+		clusterClient: clusterClient,
+		config:        cfg,
+		pool:          pool,
+		subscriptions: make(map[string][]*subscription),
+	}
+	tm := newTopologyMonitor(clusterClient, cfg, subMux)
+
+	// Hold tm.mu so refreshTopology blocks inside the goroutine
+	tm.mu.Lock()
+
+	// Trigger refresh — should launch a goroutine tracked by tm.wg
+	tm.triggerRefresh("127.0.0.1:7001", true)
+
+	// wg.Wait() should NOT complete while the goroutine is blocked on tm.mu
+	wgDone := make(chan struct{})
+	go func() {
+		tm.wg.Wait()
+		close(wgDone)
+	}()
+
+	// Give the goroutine time to start
+	time.Sleep(50 * time.Millisecond)
+
+	// BUG (without fix): wg.Wait() returns immediately because goroutine isn't tracked
+	// EXPECTED (with fix): wg.Wait() blocks because goroutine is tracked and blocked on mu
+	select {
+	case <-wgDone:
+		t.Error("wg.Wait() completed while refresh goroutine should still be running (not tracked in wg)")
+	default:
+		// Expected: goroutine is still running, wg.Wait() blocks
+	}
+
+	// Release the lock so the goroutine can proceed and finish
+	tm.mu.Unlock()
+
+	// Now wg.Wait() should complete
+	select {
+	case <-wgDone:
+		// Success
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for refresh goroutine to complete")
+	}
+}
+
+func TestHandleMigration_ResubscribeTrackedByWaitGroup(t *testing.T) {
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:       []string{"localhost:7000"},
+		DialTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	cfg := defaultConfig()
+	cfg.autoResubscribe = true
+	cfg.recorder = &noopMetrics{}
+	// Use longer migration timeout so the goroutine takes some time
+	cfg.migrationTimeout = 1 * time.Second
+	cfg.migrationStallCheck = 200 * time.Millisecond
+	pool := newPubSubPool(clusterClient, cfg)
+
+	// Use a callback that records it was called (for the signal message)
+	var signalReceived atomic.Bool
+	callback := func(ctx context.Context, msg *Message) {
+		signalReceived.Store(true)
+	}
+
+	sub := &subscription{
+		channel:  "test-channel",
+		hashslot: 100,
+		callback: callback,
+		state:    subStateActive,
+		subType:  subTypeSubscribe,
+	}
+
+	sm := &SubMux{
+		pool: pool,
+		subscriptions: map[string][]*subscription{
+			"test-channel": {sub},
+		},
+	}
+	pool.setSubMux(sm)
+
+	tm := newTopologyMonitor(clusterClient, cfg, sm)
+	pool.setTopologyMonitor(tm)
+	sm.topologyMonitor = tm
+
+	migration := hashslotMigration{hashslot: 100, oldNode: "node1:7000", newNode: "node2:7000"}
+
+	// Handle migration — launches resubscribeOnNewNodeWithMonitoring in goroutine
+	tm.handleMigration(migration)
+
+	// wg.Wait() should block until the resubscription goroutine completes
+	wgDone := make(chan struct{})
+	go func() {
+		tm.wg.Wait()
+		close(wgDone)
+	}()
+
+	select {
+	case <-wgDone:
+		// Success — wg tracked the resubscription goroutine and it completed
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout: resubscription goroutine should have completed")
+	}
+}

@@ -234,7 +234,7 @@ type topologyMonitor struct {
 	// done is closed when monitoring should stop.
 	done chan struct{}
 
-	// wg tracks the monitoring goroutine.
+	// wg tracks monitoring, refresh, and migration goroutines.
 	wg sync.WaitGroup
 
 	// pollInterval is how often to poll the topology.
@@ -279,8 +279,17 @@ func (tm *topologyMonitor) triggerRefresh(redirectAddr string, isMoved bool) {
 		tm.config.logger.Info("submux: ASK redirect detected, triggering topology refresh", "redirect_addr", redirectAddr)
 	}
 
-	// Perform refresh asynchronously to avoid blocking the caller
+	select {
+	case <-tm.done:
+		return // Already stopping
+	default:
+	}
+
+	// Perform refresh asynchronously to avoid blocking the caller.
+	// Track in wg so stop() waits for the refresh to complete.
+	tm.wg.Add(1)
 	go func() {
+		defer tm.wg.Done()
 		if err := tm.refreshTopology(); err != nil {
 			tm.config.logger.Error("submux: topology refresh after redirect failed", "error", err)
 		}
@@ -456,9 +465,20 @@ func (tm *topologyMonitor) handleMigration(migration hashslotMigration) {
 	tm.sendSignalMessages(affectedSubs, migration)
 
 	// If auto-resubscribe is enabled, recreate subscriptions on new node
-	// Run in goroutine with progress monitoring to detect timeouts/stalls
+	// Run in goroutine with progress monitoring to detect timeouts/stalls.
+	// Track in wg so stop() waits for the migration to complete.
 	if tm.config.autoResubscribe {
-		go tm.resubscribeOnNewNodeWithMonitoring(affectedSubs, migration)
+		select {
+		case <-tm.done:
+			return
+		default:
+		}
+
+		tm.wg.Add(1)
+		go func() {
+			defer tm.wg.Done()
+			tm.resubscribeOnNewNodeWithMonitoring(affectedSubs, migration)
+		}()
 	}
 }
 
