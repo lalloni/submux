@@ -130,6 +130,20 @@ type subscription struct {
 	hashslot int
 }
 
+// getPubSub returns the PubSub connection for this subscription.
+func (s *subscription) getPubSub() *redis.PubSub {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.pubsub
+}
+
+// setPubSub sets the PubSub connection for this subscription.
+func (s *subscription) setPubSub(ps *redis.PubSub) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pubsub = ps
+}
+
 // setState sets the subscription state and signals confirmation if needed.
 func (s *subscription) setState(newState subscriptionState, err error) {
 	s.mu.Lock()

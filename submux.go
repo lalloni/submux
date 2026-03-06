@@ -495,7 +495,7 @@ func (sm *SubMux) unsubscribeSubscription(ctx context.Context, sub *Sub) error {
 
 		// Check if this is the last subscription for this channel
 		// We need to check the PubSub metadata since it always tracks subscriptions
-		meta := sm.pool.getMetadata(internalSub.pubsub)
+		meta := sm.pool.getMetadata(internalSub.getPubSub())
 		if meta != nil {
 			allSubs := meta.getSubscriptions(channel)
 			// Count how many subscriptions remain after removing ours
@@ -552,7 +552,7 @@ func (sm *SubMux) unsubscribeSubscription(ctx context.Context, sub *Sub) error {
 
 		// Use the first subscription to determine command type and PubSub
 		firstSub := internalSubs[0]
-		meta := sm.pool.getMetadata(firstSub.pubsub)
+		meta := sm.pool.getMetadata(firstSub.getPubSub())
 		if meta == nil {
 			continue
 		}

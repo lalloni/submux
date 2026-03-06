@@ -710,7 +710,7 @@ func (tm *topologyMonitor) resubscribeOnNewNode(ctx context.Context, subs []*sub
 
 			// Unsubscribe from old connection (if still active)
 			for _, sub := range channelSubs {
-				meta := tm.subMux.pool.getMetadata(sub.pubsub)
+				meta := tm.subMux.pool.getMetadata(sub.getPubSub())
 				if meta != nil && meta.getState() == connStateActive {
 					// Mark subscription as closed (will be recreated)
 					sub.setState(subStateClosed, nil)
@@ -736,7 +736,7 @@ func (tm *topologyMonitor) resubscribeOnNewNode(ctx context.Context, subs []*sub
 			}
 			for _, sub := range channelSubs {
 				// Update subscription's PubSub reference
-				sub.pubsub = newPubsub
+				sub.setPubSub(newPubsub)
 
 				// Get metadata for new PubSub
 				meta := tm.subMux.pool.getMetadata(newPubsub)
