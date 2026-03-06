@@ -610,3 +610,36 @@ func TestWorkerPool_StopDrainsQueue(t *testing.T) {
 		t.Errorf("executed %d tasks, want %d — Stop() did not drain queue", got, total)
 	}
 }
+
+// TestWorkerPool_StopConcurrentSubmits verifies that concurrent Submit/TrySubmit/SubmitWithContext
+// during Stop() never panic. Previously, close(taskQueue) before cancel() created a race: callers
+// could pass ctx.Done() check then panic sending on the closed channel.
+func TestWorkerPool_StopConcurrentSubmits(t *testing.T) {
+	for range 50 {
+		pool := NewWorkerPool(4, 100)
+		pool.Start()
+
+		var wg sync.WaitGroup
+		// Goroutines that submit while Stop runs
+		for range 20 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range 100 {
+					pool.Submit(func() {})
+					pool.TrySubmit(func() {})
+					pool.SubmitWithContext(context.Background(), func() {})
+				}
+			}()
+		}
+
+		// Stop while submissions are in flight
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pool.Stop()
+		}()
+
+		wg.Wait()
+	}
+}

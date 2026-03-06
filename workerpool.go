@@ -33,6 +33,11 @@ type WorkerPool struct {
 
 	// mu protects started and stopped.
 	mu sync.Mutex
+
+	// submitMu ensures no submit is in progress when Stop closes the channel.
+	// Stop takes exclusive lock (so no new RLock), cancels, then closes.
+	// Submitters take RLock for the duration of their send.
+	submitMu sync.RWMutex
 }
 
 // NewWorkerPool creates a new worker pool with the specified number of workers and queue size.
@@ -85,7 +90,9 @@ func (wp *WorkerPool) worker() {
 // It blocks if the queue is full (providing backpressure).
 // Returns false if the pool is stopped or the context is canceled.
 func (wp *WorkerPool) Submit(task func()) bool {
-	// Check context first to avoid panic on closed channel
+	wp.submitMu.RLock()
+	defer wp.submitMu.RUnlock()
+
 	select {
 	case <-wp.ctx.Done():
 		return false
@@ -103,6 +110,17 @@ func (wp *WorkerPool) Submit(task func()) bool {
 // SubmitWithContext submits a task with a context for cancellation.
 // Returns false if the pool is stopped, the context is canceled, or the provided context is done.
 func (wp *WorkerPool) SubmitWithContext(ctx context.Context, task func()) bool {
+	wp.submitMu.RLock()
+	defer wp.submitMu.RUnlock()
+
+	select {
+	case <-wp.ctx.Done():
+		return false
+	case <-ctx.Done():
+		return false
+	default:
+	}
+
 	select {
 	case wp.taskQueue <- task:
 		return true
@@ -116,7 +134,9 @@ func (wp *WorkerPool) SubmitWithContext(ctx context.Context, task func()) bool {
 // TrySubmit attempts to submit a task without blocking.
 // Returns true if the task was submitted, false if the queue is full or the pool is stopped.
 func (wp *WorkerPool) TrySubmit(task func()) bool {
-	// Check context first to avoid panic on closed channel
+	wp.submitMu.RLock()
+	defer wp.submitMu.RUnlock()
+
 	select {
 	case <-wp.ctx.Done():
 		return false
@@ -143,11 +163,16 @@ func (wp *WorkerPool) Stop() {
 	wp.stopped = true
 	wp.mu.Unlock()
 
-	// Close the task queue first so workers drain remaining tasks before exiting.
-	close(wp.taskQueue)
-
-	// Cancel the context to reject new submissions via Submit/SubmitWithContext.
+	// Cancel first so goroutines blocked in the select have <-wp.ctx.Done() ready and will
+	// unblock and return (avoiding deadlock if we took submitMu.Lock while they're blocked).
 	wp.cancel()
+
+	// Take exclusive lock so no submit is in progress, then close. Submitters hold
+	// submitMu.RLock for the duration of their send; we wait for any in-flight submit
+	// to complete before closing (sending on a closed channel panics).
+	wp.submitMu.Lock()
+	close(wp.taskQueue)
+	wp.submitMu.Unlock()
 
 	// Wait for all workers to finish draining.
 	wp.wg.Wait()
