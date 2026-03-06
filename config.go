@@ -12,9 +12,6 @@ type config struct {
 	// autoResubscribe enables automatic resubscription when hashslot migrations occur.
 	autoResubscribe bool
 
-	// minConnectionsPerNode sets the minimum number of connections per shard node.
-	minConnectionsPerNode int
-
 	// nodePreference determines the strategy for distributing subscriptions across cluster nodes.
 	nodePreference NodePreference
 
@@ -51,7 +48,6 @@ type config struct {
 func defaultConfig() *config {
 	return &config{
 		autoResubscribe:       false,
-		minConnectionsPerNode: 1,
 		nodePreference:        BalancedAll,      // Default: distribute equally across all nodes
 		topologyPollInterval:  1 * time.Second,  // Default: poll at least once per second
 		migrationTimeout:      30 * time.Second, // Default: 30s max for migration resubscription
@@ -78,16 +74,6 @@ func WithLogger(logger *slog.Logger) Option {
 func WithAutoResubscribe(enabled bool) Option {
 	return func(c *config) {
 		c.autoResubscribe = enabled
-	}
-}
-
-// WithMinConnectionsPerNode sets the minimum number of connections per shard node (for load balancing).
-func WithMinConnectionsPerNode(count int) Option {
-	return func(c *config) {
-		if count < 1 {
-			count = 1
-		}
-		c.minConnectionsPerNode = count
 	}
 }
 

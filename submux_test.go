@@ -63,16 +63,6 @@ func TestSubMux_New_WithOptions(t *testing.T) {
 	}
 	subMux.Close()
 
-	// Test with WithMinConnectionsPerNode
-	subMux, err = New(clusterClient, WithMinConnectionsPerNode(3))
-	if err != nil {
-		t.Fatalf("New with options returned error: %v", err)
-	}
-	if subMux.config.minConnectionsPerNode != 3 {
-		t.Errorf("WithMinConnectionsPerNode option not applied: got %d, want 3", subMux.config.minConnectionsPerNode)
-	}
-	subMux.Close()
-
 	// Test with WithNodePreference
 	subMux, err = New(clusterClient, WithNodePreference(PreferReplicas))
 	if err != nil {
@@ -96,7 +86,6 @@ func TestSubMux_New_WithOptions(t *testing.T) {
 	// Test with multiple options
 	subMux, err = New(clusterClient,
 		WithAutoResubscribe(true),
-		WithMinConnectionsPerNode(2),
 		WithNodePreference(BalancedAll),
 	)
 	if err != nil {
@@ -104,9 +93,6 @@ func TestSubMux_New_WithOptions(t *testing.T) {
 	}
 	if !subMux.config.autoResubscribe {
 		t.Error("autoResubscribe not set")
-	}
-	if subMux.config.minConnectionsPerNode != 2 {
-		t.Error("minConnectionsPerNode not set")
 	}
 	if subMux.config.nodePreference != BalancedAll {
 		t.Error("nodePreference not set")
