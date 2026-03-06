@@ -578,3 +578,35 @@ func BenchmarkWorkerPool_TrySubmit(b *testing.B) {
 		pool.TrySubmit(func() {})
 	}
 }
+
+func TestWorkerPool_StopDrainsQueue(t *testing.T) {
+	// Verify that Stop() processes all queued tasks before returning.
+	// Use 1 worker with a large queue to make the test deterministic.
+	pool := NewWorkerPool(1, 1000)
+	pool.Start()
+
+	var executed atomic.Int64
+	total := 100
+
+	// Pause the worker so tasks accumulate in the queue
+	gate := make(chan struct{})
+	pool.Submit(func() {
+		<-gate // block until released
+	})
+
+	// Queue up tasks while worker is blocked
+	for range total {
+		pool.Submit(func() {
+			executed.Add(1)
+		})
+	}
+
+	// Release the worker and immediately stop
+	close(gate)
+	pool.Stop()
+
+	// All queued tasks must have been executed
+	if got := executed.Load(); got != int64(total) {
+		t.Errorf("executed %d tasks, want %d — Stop() did not drain queue", got, total)
+	}
+}

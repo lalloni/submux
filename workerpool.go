@@ -76,18 +76,8 @@ func (wp *WorkerPool) Start() {
 func (wp *WorkerPool) worker() {
 	defer wp.wg.Done()
 
-	for {
-		select {
-		case task, ok := <-wp.taskQueue:
-			if !ok {
-				// Channel closed, exit
-				return
-			}
-			// Execute the task
-			task()
-		case <-wp.ctx.Done():
-			return
-		}
+	for task := range wp.taskQueue {
+		task()
 	}
 }
 
@@ -153,13 +143,13 @@ func (wp *WorkerPool) Stop() {
 	wp.stopped = true
 	wp.mu.Unlock()
 
-	// Cancel the context to signal workers to stop accepting new tasks
-	wp.cancel()
-
-	// Close the task queue to signal workers to drain and exit
+	// Close the task queue first so workers drain remaining tasks before exiting.
 	close(wp.taskQueue)
 
-	// Wait for all workers to finish
+	// Cancel the context to reject new submissions via Submit/SubmitWithContext.
+	wp.cancel()
+
+	// Wait for all workers to finish draining.
 	wp.wg.Wait()
 }
 
