@@ -1634,3 +1634,60 @@ func TestCreatePubSubToNode_NodeNotInTopology(t *testing.T) {
 		t.Errorf("error = %q, want %q", err.Error(), expectedErr)
 	}
 }
+
+func TestGetPubSubForHashslot_ConcurrentAccessRace(t *testing.T) {
+	// This test verifies that concurrent reads of getPubSubForHashslot
+	// and concurrent writes to pubSubMetadata don't race.
+	// Run with -race flag to detect data races.
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	hashslot := 42
+	pubsub := &redis.PubSub{}
+	meta := &pubSubMetadata{
+		pubsub:               pubsub,
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 100),
+		done:                 make(chan struct{}),
+		mu:                   sync.RWMutex{},
+	}
+
+	pool.mu.Lock()
+	pool.hashslotPubSubs[hashslot] = []*redis.PubSub{pubsub}
+	pool.pubSubMetadata[pubsub] = meta
+	pool.mu.Unlock()
+
+	var wg sync.WaitGroup
+	// Concurrent readers
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				pool.getPubSubForHashslot(context.Background(), hashslot)
+			}
+		}()
+	}
+	// Concurrent writer that modifies pubSubMetadata
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for j := 0; j < 100; j++ {
+			newPubSub := &redis.PubSub{}
+			newMeta := &pubSubMetadata{
+				pubsub:               newPubSub,
+				subscriptions:        make(map[string][]*subscription),
+				pendingSubscriptions: make(map[string]*subscription),
+				state:                connStateActive,
+				cmdCh:                make(chan *command, 100),
+				done:                 make(chan struct{}),
+			}
+			pool.mu.Lock()
+			pool.pubSubMetadata[newPubSub] = newMeta
+			pool.mu.Unlock()
+		}
+	}()
+	wg.Wait()
+}

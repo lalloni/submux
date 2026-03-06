@@ -360,10 +360,9 @@ func getKeyForSlot(slot int) string {
 func (p *pubSubPool) getPubSubForHashslot(ctx context.Context, hashslot int) (*redis.PubSub, error) {
 	p.mu.RLock()
 	pubsubs := p.hashslotPubSubs[hashslot]
-	p.mu.RUnlock()
 
 	if len(pubsubs) > 0 {
-		// Find least-loaded PubSub
+		// Find least-loaded PubSub (under read lock to protect pubSubMetadata access)
 		var bestPubSub *redis.PubSub
 		minSubs := math.MaxInt
 
@@ -380,9 +379,11 @@ func (p *pubSubPool) getPubSubForHashslot(ctx context.Context, hashslot int) (*r
 		}
 
 		if bestPubSub != nil {
+			p.mu.RUnlock()
 			return bestPubSub, nil
 		}
 	}
+	p.mu.RUnlock()
 
 	// No PubSub available, need to create one
 	return p.createPubSubForHashslot(ctx, hashslot)
