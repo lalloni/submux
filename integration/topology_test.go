@@ -206,9 +206,9 @@ func TestAutoResubscribe(t *testing.T) {
 		t.Fatal("Timeout waiting for SubMux to detect migration (no EventMigration signal)")
 	}
 
-	// Force topology refresh so SPublish routes to the new owner
+	// Trigger topology refresh so SPublish eventually routes to the new owner.
+	// ReloadState is async; the retry loop below handles the race.
 	client.ReloadState(context.Background())
-	time.Sleep(100 * time.Millisecond) // allow async reload to complete
 
 	// Publish repeatedly until a message is received, confirming resubscription completed.
 	// The resubscription is in progress (started after migration detection above).
@@ -325,10 +325,7 @@ func TestManualResubscribe(t *testing.T) {
 	// Publish test message using SPublish to enforce routing to new owner
 	err = client.SPublish(context.Background(), channelName, "missed-message").Err()
 	if err != nil {
-		err = client.Publish(context.Background(), channelName, "missed-message").Err()
-	}
-	if err != nil {
-		t.Fatalf("Failed to publish: %v", err)
+		t.Fatalf("SPublish failed: %v", err)
 	}
 
 	// Verify we DON'T receive it (because we didn't resubscribe and old connection is likely dead for this slot)
@@ -361,10 +358,7 @@ func TestManualResubscribe(t *testing.T) {
 		// Publish
 		err = client.SPublish(context.Background(), channelName, "caught-message").Err()
 		if err != nil {
-			err = client.Publish(context.Background(), channelName, "caught-message").Err()
-		}
-		if err != nil {
-			t.Logf("Failed to publish: %v", err)
+			t.Logf("SPublish failed (will retry): %v", err)
 		}
 
 		select {
@@ -741,10 +735,7 @@ func TestMovedErrorDetection(t *testing.T) {
 	// Verify initial message delivery works
 	err = client.SPublish(context.Background(), channelName, "before-migration").Err()
 	if err != nil {
-		err = client.Publish(context.Background(), channelName, "before-migration").Err()
-	}
-	if err != nil {
-		t.Fatalf("Failed to publish: %v", err)
+		t.Fatalf("SPublish failed: %v", err)
 	}
 
 	select {
@@ -871,10 +862,7 @@ func TestAskErrorHandling(t *testing.T) {
 	// Verify basic connectivity
 	err = client.SPublish(context.Background(), channelName, "test").Err()
 	if err != nil {
-		err = client.Publish(context.Background(), channelName, "test").Err()
-	}
-	if err != nil {
-		t.Fatalf("Failed to publish: %v", err)
+		t.Fatalf("SPublish failed: %v", err)
 	}
 
 	select {
@@ -1001,7 +989,7 @@ drainSignals:
 	// Try to publish and verify messages are received (confirming subscriptions work)
 	err = client.SPublish(context.Background(), channel1, "after-migration").Err()
 	if err != nil {
-		err = client.Publish(context.Background(), channel1, "after-migration").Err()
+		t.Logf("SPublish failed (will retry): %v", err)
 	}
 
 	// Use retry loop for message verification
