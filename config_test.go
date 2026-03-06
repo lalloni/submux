@@ -12,9 +12,6 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.autoResubscribe != false {
 		t.Errorf("autoResubscribe = %v, want false", cfg.autoResubscribe)
 	}
-	if cfg.minConnectionsPerNode != 1 {
-		t.Errorf("minConnectionsPerNode = %d, want 1", cfg.minConnectionsPerNode)
-	}
 	if cfg.nodePreference != BalancedAll {
 		t.Errorf("nodePreference = %v, want BalancedAll", cfg.nodePreference)
 	}
@@ -29,32 +26,6 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.logger == nil {
 		t.Error("logger should not be nil")
-	}
-}
-
-func TestWithMinConnectionsPerNode(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    int
-		expected int
-	}{
-		{"positive value", 5, 5},
-		{"value of 1", 1, 1},
-		{"zero clamped to 1", 0, 1},
-		{"negative clamped to 1", -5, 1},
-		{"large negative clamped to 1", -1000, 1},
-		{"large positive value", 100, 100},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := defaultConfig()
-			WithMinConnectionsPerNode(tt.input)(cfg)
-
-			if cfg.minConnectionsPerNode != tt.expected {
-				t.Errorf("minConnectionsPerNode = %d, want %d", cfg.minConnectionsPerNode, tt.expected)
-			}
-		})
 	}
 }
 
@@ -232,7 +203,6 @@ func TestMultipleOptions(t *testing.T) {
 
 	// Apply multiple options
 	options := []Option{
-		WithMinConnectionsPerNode(10),
 		WithTopologyPollInterval(5 * time.Second),
 		WithMigrationTimeout(60 * time.Second),
 		WithMigrationStallCheck(5 * time.Second),
@@ -244,9 +214,6 @@ func TestMultipleOptions(t *testing.T) {
 		opt(cfg)
 	}
 
-	if cfg.minConnectionsPerNode != 10 {
-		t.Errorf("minConnectionsPerNode = %d, want 10", cfg.minConnectionsPerNode)
-	}
 	if cfg.topologyPollInterval != 5*time.Second {
 		t.Errorf("topologyPollInterval = %v, want 5s", cfg.topologyPollInterval)
 	}
@@ -268,11 +235,11 @@ func TestOptionOverwrite(t *testing.T) {
 	cfg := defaultConfig()
 
 	// Apply options that overwrite each other
-	WithMinConnectionsPerNode(5)(cfg)
-	WithMinConnectionsPerNode(10)(cfg)
+	WithTopologyPollInterval(2 * time.Second)(cfg)
+	WithTopologyPollInterval(5 * time.Second)(cfg)
 
-	if cfg.minConnectionsPerNode != 10 {
-		t.Errorf("Last option should win: minConnectionsPerNode = %d, want 10", cfg.minConnectionsPerNode)
+	if cfg.topologyPollInterval != 5*time.Second {
+		t.Errorf("Last option should win: topologyPollInterval = %v, want 5s", cfg.topologyPollInterval)
 	}
 }
 

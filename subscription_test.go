@@ -891,3 +891,34 @@ func TestSubscription_ClosedState_NoCallback(t *testing.T) {
 		t.Error("callback should not be invoked by setState")
 	}
 }
+
+func TestSubscription_PubSubGetSetRace(t *testing.T) {
+	// Verify that concurrent get/set of pubsub field doesn't race.
+	// Run with -race flag to detect data races.
+	sub := &subscription{
+		channel:   "test",
+		subType:   subTypeSubscribe,
+		state:     subStateActive,
+		confirmCh: make(chan error, 1),
+		doneCh:    make(chan struct{}),
+	}
+
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 100 {
+				sub.getPubSub()
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range 100 {
+			sub.setPubSub(nil)
+		}
+	}()
+	wg.Wait()
+}

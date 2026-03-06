@@ -578,3 +578,68 @@ func BenchmarkWorkerPool_TrySubmit(b *testing.B) {
 		pool.TrySubmit(func() {})
 	}
 }
+
+func TestWorkerPool_StopDrainsQueue(t *testing.T) {
+	// Verify that Stop() processes all queued tasks before returning.
+	// Use 1 worker with a large queue to make the test deterministic.
+	pool := NewWorkerPool(1, 1000)
+	pool.Start()
+
+	var executed atomic.Int64
+	total := 100
+
+	// Pause the worker so tasks accumulate in the queue
+	gate := make(chan struct{})
+	pool.Submit(func() {
+		<-gate // block until released
+	})
+
+	// Queue up tasks while worker is blocked
+	for range total {
+		pool.Submit(func() {
+			executed.Add(1)
+		})
+	}
+
+	// Release the worker and immediately stop
+	close(gate)
+	pool.Stop()
+
+	// All queued tasks must have been executed
+	if got := executed.Load(); got != int64(total) {
+		t.Errorf("executed %d tasks, want %d — Stop() did not drain queue", got, total)
+	}
+}
+
+// TestWorkerPool_StopConcurrentSubmits verifies that concurrent Submit/TrySubmit/SubmitWithContext
+// during Stop() never panic. Previously, close(taskQueue) before cancel() created a race: callers
+// could pass ctx.Done() check then panic sending on the closed channel.
+func TestWorkerPool_StopConcurrentSubmits(t *testing.T) {
+	for range 50 {
+		pool := NewWorkerPool(4, 100)
+		pool.Start()
+
+		var wg sync.WaitGroup
+		// Goroutines that submit while Stop runs
+		for range 20 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range 100 {
+					pool.Submit(func() {})
+					pool.TrySubmit(func() {})
+					pool.SubmitWithContext(context.Background(), func() {})
+				}
+			}()
+		}
+
+		// Stop while submissions are in flight
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pool.Stop()
+		}()
+
+		wg.Wait()
+	}
+}

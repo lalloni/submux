@@ -3,6 +3,7 @@ package submux
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -62,16 +63,6 @@ func TestSubMux_New_WithOptions(t *testing.T) {
 	}
 	subMux.Close()
 
-	// Test with WithMinConnectionsPerNode
-	subMux, err = New(clusterClient, WithMinConnectionsPerNode(3))
-	if err != nil {
-		t.Fatalf("New with options returned error: %v", err)
-	}
-	if subMux.config.minConnectionsPerNode != 3 {
-		t.Errorf("WithMinConnectionsPerNode option not applied: got %d, want 3", subMux.config.minConnectionsPerNode)
-	}
-	subMux.Close()
-
 	// Test with WithNodePreference
 	subMux, err = New(clusterClient, WithNodePreference(PreferReplicas))
 	if err != nil {
@@ -95,7 +86,6 @@ func TestSubMux_New_WithOptions(t *testing.T) {
 	// Test with multiple options
 	subMux, err = New(clusterClient,
 		WithAutoResubscribe(true),
-		WithMinConnectionsPerNode(2),
 		WithNodePreference(BalancedAll),
 	)
 	if err != nil {
@@ -103,9 +93,6 @@ func TestSubMux_New_WithOptions(t *testing.T) {
 	}
 	if !subMux.config.autoResubscribe {
 		t.Error("autoResubscribe not set")
-	}
-	if subMux.config.minConnectionsPerNode != 2 {
-		t.Error("minConnectionsPerNode not set")
 	}
 	if subMux.config.nodePreference != BalancedAll {
 		t.Error("nodePreference not set")
@@ -461,5 +448,209 @@ func TestSubMux_Unsubscribe_ClosedSubMux(t *testing.T) {
 	}
 	if !errors.Is(err, ErrClosed) {
 		t.Errorf("Unsubscribe on closed SubMux returned error %v, want %v", err, ErrClosed)
+	}
+}
+
+// unsubscribeTestFixture holds the common objects used by unsubscribe context tests.
+type unsubscribeTestFixture struct {
+	subMux      *SubMux
+	meta        *pubSubMetadata
+	internalSub *subscription
+	cmdCh       chan *command
+	sub         *Sub
+}
+
+// setupUnsubscribeTest creates a SubMux with a fake PubSub registration, suitable for
+// testing unsubscribe behavior without a real Redis connection.
+func setupUnsubscribeTest(t *testing.T) *unsubscribeTestFixture {
+	t.Helper()
+
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:        []string{"localhost:7000"},
+		DialTimeout:  100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+	t.Cleanup(func() { clusterClient.Close() })
+
+	subMux, err := New(clusterClient)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	t.Cleanup(func() { subMux.Close() })
+
+	fakePubSub := &redis.PubSub{}
+	cmdCh := make(chan *command, 10)
+
+	meta := &pubSubMetadata{
+		subscriptions: make(map[string][]*subscription),
+		cmdCh:         cmdCh,
+		done:          make(chan struct{}),
+	}
+
+	internalSub := &subscription{
+		channel:   "test-channel",
+		subType:   subTypeSubscribe,
+		pubsub:    fakePubSub,
+		state:     subStateActive,
+		confirmCh: make(chan error, 1),
+	}
+
+	subMux.pool.mu.Lock()
+	subMux.pool.pubSubMetadata[fakePubSub] = meta
+	subMux.pool.mu.Unlock()
+
+	meta.addSubscription(internalSub)
+
+	subMux.mu.Lock()
+	subMux.subscriptions["test-channel"] = []*subscription{internalSub}
+	subMux.mu.Unlock()
+
+	return &unsubscribeTestFixture{
+		subMux:      subMux,
+		meta:        meta,
+		internalSub: internalSub,
+		cmdCh:       cmdCh,
+		sub:         &Sub{subMux: subMux, subs: []*subscription{internalSub}},
+	}
+}
+
+func TestUnsubscribe_ContextCancellation(t *testing.T) {
+	f := setupUnsubscribeTest(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Command is always queued (uses context.Background()), but the response wait
+	// sees the cancelled ctx and returns context.Canceled.
+	err := f.sub.Unsubscribe(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Unsubscribe with canceled context: got %v, want %v", err, context.Canceled)
+	}
+}
+
+func TestUnsubscribe_ContextTimeout(t *testing.T) {
+	f := setupUnsubscribeTest(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	// No event loop consuming, so no response arrives. Timeout fires from response wait.
+	err := f.sub.Unsubscribe(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Unsubscribe with timeout context: got %v, want %v", err, context.DeadlineExceeded)
+	}
+}
+
+func TestUnsubscribe_ContextCancellation_StillCleansUp(t *testing.T) {
+	f := setupUnsubscribeTest(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := f.sub.Unsubscribe(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+
+	// Verify cleanup still happened despite context cancellation
+	if f.internalSub.getState() != subStateClosed {
+		t.Errorf("subscription state = %v, want %v", f.internalSub.getState(), subStateClosed)
+	}
+
+	f.subMux.mu.RLock()
+	_, exists := f.subMux.subscriptions["test-channel"]
+	f.subMux.mu.RUnlock()
+	if exists {
+		t.Error("channel should have been removed from subscriptions map")
+	}
+
+	remainingSubs := f.meta.getSubscriptions("test-channel")
+	if len(remainingSubs) != 0 {
+		t.Errorf("metadata should have 0 subscriptions, got %d", len(remainingSubs))
+	}
+}
+
+func TestUnsubscribe_ContextBackground_Succeeds(t *testing.T) {
+	f := setupUnsubscribeTest(t)
+
+	// Simulate event loop: consume command and respond with nil (success)
+	go func() {
+		cmd := <-f.cmdCh
+		cmd.response <- nil
+	}()
+
+	err := f.sub.Unsubscribe(context.Background())
+	if err != nil {
+		t.Errorf("Unsubscribe with background context: got %v, want nil", err)
+	}
+}
+
+func TestUnsubscribe_CancelledContext_StillSendsCommand(t *testing.T) {
+	f := setupUnsubscribeTest(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_ = f.sub.Unsubscribe(ctx)
+
+	// EXPECTED: Even with cancelled ctx, an UNSUBSCRIBE command should be queued.
+	select {
+	case cmd := <-f.cmdCh:
+		if cmd.cmd != cmdUnsubscribe {
+			t.Errorf("expected UNSUBSCRIBE command, got %s", cmd.cmd)
+		}
+		// Verify the command uses a non-cancelled context for Redis execution
+		if cmd.ctx.Err() != nil {
+			t.Error("command context should not be cancelled (should use background)")
+		}
+	default:
+		t.Error("expected UNSUBSCRIBE command to be queued, but cmdCh is empty")
+	}
+}
+
+func TestUnsubscribe_WaitsForResponse(t *testing.T) {
+	f := setupUnsubscribeTest(t)
+
+	// Simulate the event loop: read command and respond with an error
+	simulatedErr := fmt.Errorf("simulated Redis error")
+	go func() {
+		cmd := <-f.cmdCh
+		cmd.response <- simulatedErr
+	}()
+
+	// Unsubscribe should surface the error from the event loop
+	err := f.sub.Unsubscribe(context.Background())
+
+	// EXPECTED: err should contain the simulated Redis error
+	if !errors.Is(err, simulatedErr) {
+		t.Errorf("expected simulated error, got %v", err)
+	}
+}
+
+// TestUnsubscribe_ContextBackground_NoHangWhenEventLoopUnresponsive verifies that
+// when unsubscribeSubscription is called with context.Background() (e.g. from
+// subscribe cleanup) and the event loop never responds (e.g. connection failure
+// after command queued), we timeout instead of hanging forever.
+func TestUnsubscribe_ContextBackground_NoHangWhenEventLoopUnresponsive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping 5s timeout test in short mode")
+	}
+	f := setupUnsubscribeTest(t)
+
+	// Don't consume from cmdCh - simulate event loop dead after command queued.
+	// With context.Background(), ctx.Done() never fires. Without the fix, we'd hang forever.
+	done := make(chan error, 1)
+	go func() {
+		done <- f.sub.Unsubscribe(context.Background())
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("expected context.DeadlineExceeded when event loop unresponsive, got %v", err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("Unsubscribe hung for 6s - should timeout when event loop is unresponsive")
 	}
 }

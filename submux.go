@@ -152,6 +152,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -197,6 +198,9 @@ type SubMux struct {
 
 	// closed indicates if SubMux is closed.
 	closed bool
+
+	// callbackWg tracks fallback callback goroutines (when worker pool rejects).
+	callbackWg sync.WaitGroup
 
 	// closeOnce ensures Close is only called once.
 	closeOnce sync.Once
@@ -306,15 +310,8 @@ func (sm *SubMux) subscribe(ctx context.Context, channels []string, subType subs
 	}
 
 	// Determine command name based on subscription type
-	var cmdName string
-	switch subType {
-	case subTypeSubscribe:
-		cmdName = cmdSubscribe
-	case subTypePSubscribe:
-		cmdName = cmdPSubscribe
-	case subTypeSSubscribe:
-		cmdName = cmdSSubscribe
-	default:
+	cmdName := subType.subscribeCommandName()
+	if cmdName == "" {
 		return nil, fmt.Errorf("invalid subscription type: %d", subType)
 	}
 
@@ -328,8 +325,10 @@ func (sm *SubMux) subscribe(ctx context.Context, channels []string, subType subs
 	for _, channel := range channels {
 		internalSub, err := sm.subscribeToChannel(ctx, channel, subType, cmdName, callback)
 		if err != nil {
-			// If we fail partway through, unsubscribe what we've already subscribed to
-			sm.unsubscribeSubscription(sub)
+			// If we fail partway through, unsubscribe what we've already subscribed to.
+			// Use context.Background() for cleanup: ctx may be expired (causing the failure),
+			// and we must guarantee UNSUBSCRIBE commands are sent to avoid orphaned server-side subscriptions.
+			sm.unsubscribeSubscription(context.Background(), sub)
 			return nil, fmt.Errorf("failed to subscribe to channel %s: %w", channel, err)
 		}
 		sub.subs = append(sub.subs, internalSub)
@@ -391,6 +390,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 
 		// Create and send subscription command
 		cmd := &command{
+			ctx:      ctx,
 			cmd:      cmdName,
 			args:     []any{channel},
 			sub:      sub,
@@ -469,11 +469,11 @@ func (s *Sub) Unsubscribe(ctx context.Context) error {
 	if s == nil || s.subMux == nil {
 		return nil
 	}
-	return s.subMux.unsubscribeSubscription(s)
+	return s.subMux.unsubscribeSubscription(ctx, s)
 }
 
 // unsubscribeSubscription unsubscribes all internal subscriptions in a Subscription.
-func (sm *SubMux) unsubscribeSubscription(sub *Sub) error {
+func (sm *SubMux) unsubscribeSubscription(ctx context.Context, sub *Sub) error {
 	if sub == nil || len(sub.subs) == 0 {
 		return nil
 	}
@@ -481,7 +481,7 @@ func (sm *SubMux) unsubscribeSubscription(sub *Sub) error {
 	sm.mu.Lock()
 	if sm.closed {
 		sm.mu.Unlock()
-		return fmt.Errorf("%w", ErrClosed)
+		return ErrClosed
 	}
 	sm.mu.Unlock()
 
@@ -495,7 +495,7 @@ func (sm *SubMux) unsubscribeSubscription(sub *Sub) error {
 
 		// Check if this is the last subscription for this channel
 		// We need to check the PubSub metadata since it always tracks subscriptions
-		meta := sm.pool.getMetadata(internalSub.pubsub)
+		meta := sm.pool.getMetadata(internalSub.getPubSub())
 		if meta != nil {
 			allSubs := meta.getSubscriptions(channel)
 			// Count how many subscriptions remain after removing ours
@@ -531,7 +531,20 @@ func (sm *SubMux) unsubscribeSubscription(sub *Sub) error {
 	}
 	sm.mu.Unlock()
 
-	// Send UNSUBSCRIBE commands and remove from PubSub metadata
+	// Send UNSUBSCRIBE commands and remove from PubSub metadata.
+	// Structured in 3 phases:
+	//   Phase 1: Queue commands and mark subscriptions as closed
+	//   Phase 2: Wait for responses from event loop
+	//   Phase 3: Clean metadata after response
+	var firstErr error
+	type pendingUnsub struct {
+		meta     *pubSubMetadata
+		subs     []*subscription
+		response chan error
+	}
+	var pending []pendingUnsub
+
+	// Phase 1: Queue commands, mark closed
 	for channel, internalSubs := range subsByChannel {
 		if len(internalSubs) == 0 {
 			continue
@@ -539,21 +552,13 @@ func (sm *SubMux) unsubscribeSubscription(sub *Sub) error {
 
 		// Use the first subscription to determine command type and PubSub
 		firstSub := internalSubs[0]
-		meta := sm.pool.getMetadata(firstSub.pubsub)
+		meta := sm.pool.getMetadata(firstSub.getPubSub())
 		if meta == nil {
 			continue
 		}
 
 		// Determine unsubscribe command based on subscription type
-		var cmdName string
-		switch firstSub.subType {
-		case subTypeSubscribe:
-			cmdName = cmdUnsubscribe
-		case subTypePSubscribe:
-			cmdName = cmdPUnsubscribe
-		case subTypeSSubscribe:
-			cmdName = cmdSUnsubscribe
-		}
+		cmdName := firstSub.subType.unsubscribeCommandName()
 
 		// Mark all subscriptions as closed
 		for _, internalSub := range internalSubs {
@@ -562,24 +567,62 @@ func (sm *SubMux) unsubscribeSubscription(sub *Sub) error {
 
 		// Only send UNSUBSCRIBE command if this is the last subscription for this channel
 		if channelsToUnsub[channel] {
+			// Use context.Background() for the UNSUBSCRIBE command: even if the caller's
+			// context is expired, we must guarantee the UNSUBSCRIBE reaches Redis to avoid
+			// orphaned server-side subscriptions. This mirrors the cleanup pattern at subscribe().
 			cmd := &command{
+				ctx:      context.Background(),
 				cmd:      cmdName,
 				args:     []any{channel},
 				sub:      firstSub,
 				response: make(chan error, 1),
 			}
 
-			// Send command (ignore errors - we'll still remove from metadata)
-			_ = meta.sendCommand(context.Background(), cmd)
+			if err := meta.sendCommand(context.Background(), cmd); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				// Still clean metadata below
+			} else {
+				pending = append(pending, pendingUnsub{meta, internalSubs, cmd.response})
+				continue // Don't clean metadata yet — wait for response first
+			}
 		}
 
-		// Remove all subscriptions from PubSub metadata
+		// No command needed or command failed — clean metadata now
 		for _, internalSub := range internalSubs {
 			meta.removeSubscription(internalSub)
 		}
 	}
 
-	return nil
+	// Phase 2: Wait for responses from event loop.
+	// When ctx has no deadline (e.g. context.Background() from subscribe cleanup),
+	// use a timeout to prevent hanging forever if the event loop exits (e.g. connection
+	// failure) after the command is queued but before processing it.
+	waitCtx := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+	}
+	for _, p := range pending {
+		select {
+		case err := <-p.response:
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		case <-waitCtx.Done():
+			if firstErr == nil {
+				firstErr = waitCtx.Err()
+			}
+		}
+		// Phase 3: Clean metadata after response
+		for _, internalSub := range p.subs {
+			p.meta.removeSubscription(internalSub)
+		}
+	}
+
+	return firstErr
 }
 
 // removeSubscriptionFromMap removes a subscription from the global subscriptions map.
@@ -643,6 +686,9 @@ func (sm *SubMux) Close() error {
 		if sm.workerPool != nil {
 			sm.workerPool.Stop()
 		}
+
+		// Wait for any fallback callback goroutines to complete
+		sm.callbackWg.Wait()
 
 		// Clear subscriptions
 		sm.mu.Lock()

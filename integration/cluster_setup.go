@@ -794,6 +794,40 @@ func (tc *TestCluster) StopNode(nodeAddr string) error {
 	return fmt.Errorf("node %s not found", nodeAddr)
 }
 
+// PauseNode sends SIGSTOP to a specific node, freezing its process.
+// Unlike StopNode, the TCP socket remains open so connections hang rather than
+// being refused. This is useful for testing timeout and stall detection.
+func (tc *TestCluster) PauseNode(nodeAddr string) error {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	for i, node := range tc.nodes {
+		if node.Address == nodeAddr {
+			if i < len(tc.processes) && tc.processes[i] != nil && tc.processes[i].Process != nil {
+				return tc.processes[i].Process.Signal(syscall.SIGSTOP)
+			}
+		}
+	}
+
+	return fmt.Errorf("node %s not found", nodeAddr)
+}
+
+// ResumeNode sends SIGCONT to a previously paused node.
+func (tc *TestCluster) ResumeNode(nodeAddr string) error {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	for i, node := range tc.nodes {
+		if node.Address == nodeAddr {
+			if i < len(tc.processes) && tc.processes[i] != nil && tc.processes[i].Process != nil {
+				return tc.processes[i].Process.Signal(syscall.SIGCONT)
+			}
+		}
+	}
+
+	return fmt.Errorf("node %s not found", nodeAddr)
+}
+
 // MigrateHashslot migrates a hashslot from one node to another.
 // It performs the complete migration process:
 // 1. Finds the source node that owns the slot

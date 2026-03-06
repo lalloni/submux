@@ -1259,9 +1259,60 @@ func TestResubscribeOnNewNode_EmptySubscriptions(t *testing.T) {
 	var counter atomic.Int64
 	var wg sync.WaitGroup
 
+	ctx := context.Background()
 	// Should not panic with empty subscriptions
-	tm.resubscribeOnNewNode(nil, migration, &counter, &wg)
-	tm.resubscribeOnNewNode([]*subscription{}, migration, &counter, &wg)
+	tm.resubscribeOnNewNode(ctx, nil, migration, &counter, &wg)
+	tm.resubscribeOnNewNode(ctx, []*subscription{}, migration, &counter, &wg)
+}
+
+func TestResubscribeOnNewNode_RespectsParentContext(t *testing.T) {
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:       []string{"localhost:7000"},
+		DialTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	cfg := defaultConfig()
+	cfg.recorder = &noopMetrics{}
+	cfg.autoResubscribe = true
+	pool := newPubSubPool(clusterClient, cfg)
+
+	sm := &SubMux{
+		pool:          pool,
+		subscriptions: make(map[string][]*subscription),
+	}
+	pool.setSubMux(sm)
+
+	tm := newTopologyMonitor(clusterClient, cfg, sm)
+	pool.setTopologyMonitor(tm)
+	sm.topologyMonitor = tm
+
+	sub := &subscription{
+		channel:  "test-channel",
+		subType:  subTypeSubscribe,
+		state:    subStateClosed,
+		hashslot: 100,
+	}
+
+	var processedCount atomic.Int64
+	var wg sync.WaitGroup
+
+	// Use an already-cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	migration := hashslotMigration{hashslot: 100, oldNode: "old:7000", newNode: "new:7001"}
+
+	// With cancelled ctx, resubscribeOnNewNode should skip the resubscription
+	// because getPubSubForHashslot should fail with context error.
+	tm.resubscribeOnNewNode(ctx, []*subscription{sub}, migration, &processedCount, &wg)
+
+	wg.Wait()
+
+	// The subscription should have been counted as processed (skipped due to ctx)
+	if processedCount.Load() != 1 {
+		t.Errorf("expected processedCount=1, got %d", processedCount.Load())
+	}
 }
 
 // Additional topology edge case tests
@@ -1462,5 +1513,192 @@ func TestTopologyState_GetAnySlotForNode_ReturnsConsistently(t *testing.T) {
 	slot2, _ := ts.getAnySlotForNode("node1:7000")
 	if slot != slot2 {
 		t.Errorf("inconsistent slot returned: %d vs %d", slot, slot2)
+	}
+}
+
+func TestTriggerRefresh_TrackedByWaitGroup(t *testing.T) {
+	// Create a topology monitor where refreshTopology blocks on tm.mu
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:       []string{"localhost:7000"},
+		DialTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	cfg := defaultConfig()
+	cfg.recorder = &noopMetrics{}
+	pool := newPubSubPool(clusterClient, cfg)
+	subMux := &SubMux{
+		clusterClient: clusterClient,
+		config:        cfg,
+		pool:          pool,
+		subscriptions: make(map[string][]*subscription),
+	}
+	tm := newTopologyMonitor(clusterClient, cfg, subMux)
+
+	// Hold tm.mu so refreshTopology blocks inside the goroutine
+	tm.mu.Lock()
+
+	// Trigger refresh — should launch a goroutine tracked by tm.wg
+	tm.triggerRefresh("127.0.0.1:7001", true)
+
+	// wg.Wait() should NOT complete while the goroutine is blocked on tm.mu
+	wgDone := make(chan struct{})
+	go func() {
+		tm.wg.Wait()
+		close(wgDone)
+	}()
+
+	// Give the goroutine time to start
+	time.Sleep(50 * time.Millisecond)
+
+	// BUG (without fix): wg.Wait() returns immediately because goroutine isn't tracked
+	// EXPECTED (with fix): wg.Wait() blocks because goroutine is tracked and blocked on mu
+	select {
+	case <-wgDone:
+		t.Error("wg.Wait() completed while refresh goroutine should still be running (not tracked in wg)")
+	default:
+		// Expected: goroutine is still running, wg.Wait() blocks
+	}
+
+	// Release the lock so the goroutine can proceed and finish
+	tm.mu.Unlock()
+
+	// Now wg.Wait() should complete
+	select {
+	case <-wgDone:
+		// Success
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for refresh goroutine to complete")
+	}
+}
+
+func TestHandleMigration_ResubscribeTrackedByWaitGroup(t *testing.T) {
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:       []string{"localhost:7000"},
+		DialTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	cfg := defaultConfig()
+	cfg.autoResubscribe = true
+	cfg.recorder = &noopMetrics{}
+	// Use longer migration timeout so the goroutine takes some time
+	cfg.migrationTimeout = 1 * time.Second
+	cfg.migrationStallCheck = 200 * time.Millisecond
+	pool := newPubSubPool(clusterClient, cfg)
+
+	// Use a callback that records it was called (for the signal message)
+	var signalReceived atomic.Bool
+	callback := func(ctx context.Context, msg *Message) {
+		signalReceived.Store(true)
+	}
+
+	sub := &subscription{
+		channel:  "test-channel",
+		hashslot: 100,
+		callback: callback,
+		state:    subStateActive,
+		subType:  subTypeSubscribe,
+	}
+
+	sm := &SubMux{
+		pool: pool,
+		subscriptions: map[string][]*subscription{
+			"test-channel": {sub},
+		},
+	}
+	pool.setSubMux(sm)
+
+	tm := newTopologyMonitor(clusterClient, cfg, sm)
+	pool.setTopologyMonitor(tm)
+	sm.topologyMonitor = tm
+
+	migration := hashslotMigration{hashslot: 100, oldNode: "node1:7000", newNode: "node2:7000"}
+
+	// Handle migration — launches resubscribeOnNewNodeWithMonitoring in goroutine
+	tm.handleMigration(migration)
+
+	// wg.Wait() should block until the resubscription goroutine completes
+	wgDone := make(chan struct{})
+	go func() {
+		tm.wg.Wait()
+		close(wgDone)
+	}()
+
+	select {
+	case <-wgDone:
+		// Success — wg tracked the resubscription goroutine and it completed
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout: resubscription goroutine should have completed")
+	}
+}
+
+func TestResubscribeOnNewNode_RemovesFromOldMetadata(t *testing.T) {
+	// Verify that migration removes subscriptions from old metadata
+	// before adding to new metadata.
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	// Set up old PubSub with metadata
+	oldPubSub := &redis.PubSub{}
+	oldMeta := &pubSubMetadata{
+		pubsub:               oldPubSub,
+		logger:               cfg.logger,
+		recorder:             &noopMetrics{},
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 100),
+		done:                 make(chan struct{}),
+	}
+
+	// Set up new PubSub with metadata
+	newPubSub := &redis.PubSub{}
+	newMeta := &pubSubMetadata{
+		pubsub:               newPubSub,
+		logger:               cfg.logger,
+		recorder:             &noopMetrics{},
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 100),
+		done:                 make(chan struct{}),
+	}
+
+	pool.mu.Lock()
+	pool.pubSubMetadata[oldPubSub] = oldMeta
+	pool.pubSubMetadata[newPubSub] = newMeta
+	pool.hashslotPubSubs[42] = []*redis.PubSub{newPubSub}
+	pool.mu.Unlock()
+
+	// Create subscription on old metadata
+	sub := &subscription{
+		channel:   "test-channel",
+		subType:   subTypeSubscribe,
+		pubsub:    oldPubSub,
+		state:     subStateActive,
+		confirmCh: make(chan error, 1),
+		doneCh:    make(chan struct{}),
+		hashslot:  42,
+		callback:  func(ctx context.Context, msg *Message) {},
+	}
+	oldMeta.addSubscription(sub)
+
+	if oldMeta.subscriptionCount() != 1 {
+		t.Fatalf("old meta should have 1 subscription, got %d", oldMeta.subscriptionCount())
+	}
+
+	// Simulate what resubscribeOnNewNode does
+	oldMeta.removeSubscription(sub)
+	sub.setPubSub(newPubSub)
+	newMeta.addSubscription(sub)
+
+	// Verify old metadata no longer tracks the subscription
+	if oldMeta.subscriptionCount() != 0 {
+		t.Errorf("old meta should have 0 subscriptions after migration, got %d", oldMeta.subscriptionCount())
+	}
+	// Verify new metadata tracks the subscription
+	if newMeta.subscriptionCount() != 1 {
+		t.Errorf("new meta should have 1 subscription after migration, got %d", newMeta.subscriptionCount())
 	}
 }

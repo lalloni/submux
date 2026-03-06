@@ -234,7 +234,7 @@ type topologyMonitor struct {
 	// done is closed when monitoring should stop.
 	done chan struct{}
 
-	// wg tracks the monitoring goroutine.
+	// wg tracks monitoring, refresh, and migration goroutines.
 	wg sync.WaitGroup
 
 	// pollInterval is how often to poll the topology.
@@ -279,8 +279,19 @@ func (tm *topologyMonitor) triggerRefresh(redirectAddr string, isMoved bool) {
 		tm.config.logger.Info("submux: ASK redirect detected, triggering topology refresh", "redirect_addr", redirectAddr)
 	}
 
-	// Perform refresh asynchronously to avoid blocking the caller
+	// Add(1) before checking done to avoid race with stop():
+	// if we checked done first, stop() could run between the check and Add(1),
+	// causing Wait() to return before our Add(1), leading to WaitGroup misuse.
+	tm.wg.Add(1)
+	select {
+	case <-tm.done:
+		tm.wg.Done()
+		return
+	default:
+	}
+
 	go func() {
+		defer tm.wg.Done()
 		if err := tm.refreshTopology(); err != nil {
 			tm.config.logger.Error("submux: topology refresh after redirect failed", "error", err)
 		}
@@ -456,9 +467,21 @@ func (tm *topologyMonitor) handleMigration(migration hashslotMigration) {
 	tm.sendSignalMessages(affectedSubs, migration)
 
 	// If auto-resubscribe is enabled, recreate subscriptions on new node
-	// Run in goroutine with progress monitoring to detect timeouts/stalls
+	// Run in goroutine with progress monitoring to detect timeouts/stalls.
 	if tm.config.autoResubscribe {
-		go tm.resubscribeOnNewNodeWithMonitoring(affectedSubs, migration)
+		// Add(1) before checking done to avoid race with stop() (same as triggerRefresh).
+		tm.wg.Add(1)
+		select {
+		case <-tm.done:
+			tm.wg.Done()
+			return
+		default:
+		}
+
+		go func() {
+			defer tm.wg.Done()
+			tm.resubscribeOnNewNodeWithMonitoring(affectedSubs, migration)
+		}()
 	}
 }
 
@@ -481,120 +504,71 @@ func (tm *topologyMonitor) findAffectedSubscriptions(hashslot int) []*subscripti
 	return affected
 }
 
+// broadcastSignal sends a signal message to each subscription's callback.
+// It retrieves the worker pool, callback WaitGroup, and lifecycle context from subMux,
+// falling back to safe defaults when subMux is nil (e.g. in tests).
+func (tm *topologyMonitor) broadcastSignal(subs []*subscription, signal *SignalInfo) {
+	var workerPool *WorkerPool
+	var callbackWg *sync.WaitGroup
+	var lifecycleCtx context.Context
+	if tm.subMux != nil {
+		workerPool = tm.subMux.workerPool
+		callbackWg = &tm.subMux.callbackWg
+		lifecycleCtx = tm.subMux.lifecycleCtx
+	}
+	if lifecycleCtx == nil {
+		lifecycleCtx = context.Background()
+	}
+
+	timestamp := time.Now()
+	for _, sub := range subs {
+		msg := &Message{
+			Type:             MessageTypeSignal,
+			Signal:           signal,
+			Timestamp:        timestamp,
+			SubscriptionType: sub.subType,
+		}
+		invokeCallback(lifecycleCtx, tm.config.logger, tm.config.recorder, workerPool, callbackWg, sub.callback, msg)
+	}
+}
+
 // sendSignalMessages sends signal messages to affected subscriptions.
 func (tm *topologyMonitor) sendSignalMessages(subs []*subscription, migration hashslotMigration) {
-	signal := &SignalInfo{
+	tm.broadcastSignal(subs, &SignalInfo{
 		EventType: EventMigration,
 		Hashslot:  migration.hashslot,
 		OldNode:   migration.oldNode,
 		NewNode:   migration.newNode,
 		Details:   fmt.Sprintf("Hashslot %d migrated from %s to %s", migration.hashslot, migration.oldNode, migration.newNode),
-	}
-
-	timestamp := time.Now()
-
-	// Get worker pool and lifecycle context from subMux (may be nil in tests)
-	var workerPool *WorkerPool
-	var lifecycleCtx context.Context
-	if tm.subMux != nil {
-		workerPool = tm.subMux.workerPool
-		lifecycleCtx = tm.subMux.lifecycleCtx
-	}
-	if lifecycleCtx == nil {
-		lifecycleCtx = context.Background()
-	}
-
-	// Send to all affected subscriptions
-	// Create a separate message copy for each subscription to avoid race conditions
-	for _, sub := range subs {
-		msg := &Message{
-			Type:             MessageTypeSignal,
-			Signal:           signal,
-			Timestamp:        timestamp,
-			SubscriptionType: sub.subType,
-		}
-		invokeCallback(tm.config.logger, tm.config.recorder, workerPool, lifecycleCtx, sub.callback, msg)
-	}
+	})
 }
 
 // sendMigrationTimeoutSignal sends a signal message when migration resubscription exceeds the maximum duration.
 func (tm *topologyMonitor) sendMigrationTimeoutSignal(subs []*subscription, migration hashslotMigration, duration time.Duration) {
-	// Record migration timeout metric
 	tm.config.recorder.recordMigrationTimeout()
 
-	signal := &SignalInfo{
+	tm.broadcastSignal(subs, &SignalInfo{
 		EventType: EventMigrationTimeout,
 		Hashslot:  migration.hashslot,
 		OldNode:   migration.oldNode,
 		NewNode:   migration.newNode,
 		Details:   fmt.Sprintf("Hashslot %d migration resubscription exceeded maximum duration of %v. Subscribers may need to manually resubscribe.", migration.hashslot, duration),
-	}
-
-	timestamp := time.Now()
-
-	// Get worker pool and lifecycle context from subMux (may be nil in tests)
-	var workerPool *WorkerPool
-	var lifecycleCtx context.Context
-	if tm.subMux != nil {
-		workerPool = tm.subMux.workerPool
-		lifecycleCtx = tm.subMux.lifecycleCtx
-	}
-	if lifecycleCtx == nil {
-		lifecycleCtx = context.Background()
-	}
-
-	// Send to all affected subscriptions
-	// Create a separate message copy for each subscription to avoid race conditions
-	for _, sub := range subs {
-		msg := &Message{
-			Type:             MessageTypeSignal,
-			Signal:           signal,
-			Timestamp:        timestamp,
-			SubscriptionType: sub.subType,
-		}
-		invokeCallback(tm.config.logger, tm.config.recorder, workerPool, lifecycleCtx, sub.callback, msg)
-	}
+	})
 
 	tm.config.logger.Warn("submux: migration timeout", "hashslot", migration.hashslot, "duration", duration)
 }
 
 // sendMigrationStalledSignal sends a signal message when migration resubscription appears to have stalled.
 func (tm *topologyMonitor) sendMigrationStalledSignal(subs []*subscription, migration hashslotMigration, stallDuration time.Duration) {
-	// Record migration stalled metric
 	tm.config.recorder.recordMigrationStalled()
 
-	signal := &SignalInfo{
+	tm.broadcastSignal(subs, &SignalInfo{
 		EventType: EventMigrationStalled,
 		Hashslot:  migration.hashslot,
 		OldNode:   migration.oldNode,
 		NewNode:   migration.newNode,
 		Details:   fmt.Sprintf("Hashslot %d migration resubscription appears stalled (no progress for %v). Subscribers may need to manually resubscribe.", migration.hashslot, stallDuration),
-	}
-
-	timestamp := time.Now()
-
-	// Get worker pool and lifecycle context from subMux (may be nil in tests)
-	var workerPool *WorkerPool
-	var lifecycleCtx context.Context
-	if tm.subMux != nil {
-		workerPool = tm.subMux.workerPool
-		lifecycleCtx = tm.subMux.lifecycleCtx
-	}
-	if lifecycleCtx == nil {
-		lifecycleCtx = context.Background()
-	}
-
-	// Send to all affected subscriptions
-	// Create a separate message copy for each subscription to avoid race conditions
-	for _, sub := range subs {
-		msg := &Message{
-			Type:             MessageTypeSignal,
-			Signal:           signal,
-			Timestamp:        timestamp,
-			SubscriptionType: sub.subType,
-		}
-		invokeCallback(tm.config.logger, tm.config.recorder, workerPool, lifecycleCtx, sub.callback, msg)
-	}
+	})
 
 	tm.config.logger.Warn("submux: migration stalled", "hashslot", migration.hashslot, "duration", stallDuration)
 }
@@ -620,26 +594,61 @@ func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscripti
 
 	totalSubs := int64(len(subs))
 
+	// Create a migration context with a deadline extended beyond migrationTimeout.
+	// The monitoring goroutine checks time.Since(startTime) > migrationTimeout to
+	// detect timeout, but per-command contexts derive from this context. Without
+	// extra headroom the context expires at the same instant the monitoring goroutine
+	// would detect the timeout, creating a race where doneCh closes before the
+	// monitoring ticker fires. Adding 2×stallCheckInterval ensures at least one
+	// monitoring tick can observe the timeout and send the signal.
+	ctxDeadline := migrationTimeout + 2*stallCheckInterval
+	migrationCtx, migrationCancel := context.WithTimeout(context.Background(), ctxDeadline)
+	defer migrationCancel()
+
 	// Progress monitoring goroutine
 	go func() {
 		ticker := time.NewTicker(stallCheckInterval)
 		defer ticker.Stop()
 
+		signalSent := false
+
 		for {
 			select {
 			case <-doneCh:
+				// Resubscription goroutines finished. Perform a final signal check
+				// to handle cases where all goroutines completed (possibly with errors)
+				// before the ticker had a chance to fire.
+				if !signalSent {
+					anyFailed := false
+					for _, sub := range subs {
+						if sub.getState() != subStateActive {
+							anyFailed = true
+						}
+					}
+					if anyFailed {
+						elapsed := time.Since(startTime)
+						if elapsed > migrationTimeout {
+							tm.sendMigrationTimeoutSignal(subs, migration, migrationTimeout)
+						} else if time.Since(lastProgressTime) > stallCheckInterval {
+							tm.sendMigrationStalledSignal(subs, migration, time.Since(lastProgressTime))
+						}
+					}
+				}
 				return
+
 			case <-ticker.C:
 				currentCount := processedCount.Load()
 
-				// Check if completed
+				// If all subs are processed, stop monitoring but stay alive
+				// for the doneCh final check (which verifies actual success).
 				if currentCount >= totalSubs {
-					return
+					continue
 				}
 
 				// Check for timeout
 				if time.Since(startTime) > migrationTimeout {
 					tm.sendMigrationTimeoutSignal(subs, migration, migrationTimeout)
+					signalSent = true
 					return
 				}
 
@@ -650,14 +659,15 @@ func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscripti
 				} else if time.Since(lastProgressTime) > stallCheckInterval {
 					// No progress in last interval - it's a stall
 					tm.sendMigrationStalledSignal(subs, migration, time.Since(lastProgressTime))
+					signalSent = true
 					return
 				}
 			}
 		}
 	}()
 
-	// Perform resubscription
-	tm.resubscribeOnNewNode(subs, migration, &processedCount, &wg)
+	// Perform resubscription with the migration context
+	tm.resubscribeOnNewNode(migrationCtx, subs, migration, &processedCount, &wg)
 
 	// Wait for all spawned goroutines to complete before signaling done
 	wg.Wait()
@@ -672,7 +682,9 @@ func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscripti
 }
 
 // resubscribeOnNewNode recreates subscriptions on the new node after migration.
-func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration hashslotMigration, processedCount *atomic.Int64, wg *sync.WaitGroup) {
+// The ctx parameter is the migration context — it enforces the overall migration timeout.
+// Per-command contexts are derived from it.
+func (tm *topologyMonitor) resubscribeOnNewNode(ctx context.Context, subs []*subscription, migration hashslotMigration, processedCount *atomic.Int64, wg *sync.WaitGroup) {
 	// Group subscriptions by channel (to avoid duplicate SUBSCRIBE commands)
 	channelsByType := make(map[subscriptionType]map[string][]*subscription)
 	for _, sub := range subs {
@@ -682,12 +694,23 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 		channelsByType[sub.subType][sub.channel] = append(channelsByType[sub.subType][sub.channel], sub)
 	}
 
+	// Clear the old hashslot-to-PubSub cache entry. After migration the cached
+	// PubSub points at the source node, which would respond with MOVED. Forcing
+	// a fresh lookup ensures getPubSubForHashslot connects to the new owner.
+	tm.subMux.pool.invalidateHashslot(migration.hashslot)
+
 	// For each subscription type and channel, recreate subscriptions
 	for subType, channels := range channelsByType {
 		for channel, channelSubs := range channels {
+			// Check if migration context expired
+			if ctx.Err() != nil {
+				processedCount.Add(int64(len(channelSubs)))
+				continue
+			}
+
 			// Unsubscribe from old connection (if still active)
 			for _, sub := range channelSubs {
-				meta := tm.subMux.pool.getMetadata(sub.pubsub)
+				meta := tm.subMux.pool.getMetadata(sub.getPubSub())
 				if meta != nil && meta.getState() == connStateActive {
 					// Mark subscription as closed (will be recreated)
 					sub.setState(subStateClosed, nil)
@@ -695,10 +718,16 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 			}
 
 			// Recreate subscriptions on new node
-			// Get new PubSub for the hashslot (will use new node)
-			ctx := context.Background()
+			// Use migration ctx for connection creation (replaces per-iteration timeout)
 			newPubsub, err := tm.subMux.pool.getPubSubForHashslot(ctx, migration.hashslot)
 			if err != nil {
+				if ctx.Err() != nil {
+					// Migration context expired — skip remaining
+					tm.config.logger.Debug("submux: resubscription skipping: migration context expired",
+						"hashslot", migration.hashslot, "error", err)
+					processedCount.Add(int64(len(channelSubs)))
+					return
+				}
 				// Log error and continue with other subscriptions
 				tm.config.logger.Error("submux: failed to get PubSub for migrated hashslot", "hashslot", migration.hashslot, "error", err)
 				// Report progress even on error
@@ -706,8 +735,14 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 				continue
 			}
 			for _, sub := range channelSubs {
+				// Remove subscription from old metadata before migrating
+				oldMeta := tm.subMux.pool.getMetadata(sub.getPubSub())
+				if oldMeta != nil {
+					oldMeta.removeSubscription(sub)
+				}
+
 				// Update subscription's PubSub reference
-				sub.pubsub = newPubsub
+				sub.setPubSub(newPubsub)
 
 				// Get metadata for new PubSub
 				meta := tm.subMux.pool.getMetadata(newPubsub)
@@ -720,15 +755,7 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 				meta.addSubscription(sub)
 
 				// Determine command name based on subscription type
-				var cmdName string
-				switch subType {
-				case subTypeSubscribe:
-					cmdName = cmdSubscribe
-				case subTypePSubscribe:
-					cmdName = cmdPSubscribe
-				case subTypeSSubscribe:
-					cmdName = cmdSSubscribe
-				}
+				cmdName := subType.subscribeCommandName()
 
 				// Check if channel is already subscribed on new PubSub
 				// existingSubs now includes the one we just added, so count should be >= 1
@@ -736,7 +763,9 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 				isFirstOnNewPubSub := len(existingSubs) == 1
 
 				if isFirstOnNewPubSub {
-					// Mark as pending
+					// Prepare for resubscription: drain any stale confirmation
+					// from a previous subscribe cycle and mark as pending.
+					sub.resetConfirmation()
 					sub.setState(subStatePending, nil)
 					meta.addPendingSubscription(sub)
 
@@ -748,16 +777,17 @@ func (tm *topologyMonitor) resubscribeOnNewNode(subs []*subscription, migration 
 						defer wg.Done()
 						defer counter.Add(1)
 
+						// Derive per-command context from migration context
+						cmdCtx, cmdCancel := context.WithTimeout(ctx, 10*time.Second)
+						defer cmdCancel()
+
 						cmd := &command{
+							ctx:      cmdCtx,
 							cmd:      cName,
 							args:     []any{chName},
 							sub:      s,
 							response: make(chan error, 1),
 						}
-
-						// Use a separate context for the command
-						cmdCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-						defer cancel()
 
 						if err := m.sendCommand(cmdCtx, cmd); err != nil {
 							m.logger.Error("submux: failed to send resubscribe command", "channel", chName, "error", err)

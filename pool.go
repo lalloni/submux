@@ -46,6 +46,7 @@ const (
 // The event loop processes commands from cmdCh and sends errors (if any) back
 // via the response channel.
 type command struct {
+	ctx      context.Context // carries caller context across the cmdCh channel boundary
 	cmd      string
 	args     []any
 	sub      *subscription
@@ -85,6 +86,9 @@ type pubSubMetadata struct {
 	// lifecycleCtx is the context for the SubMux lifecycle.
 	// Canceled when SubMux.Close() is called.
 	lifecycleCtx context.Context
+
+	// callbackWg tracks fallback callback goroutines for this connection.
+	callbackWg *sync.WaitGroup
 
 	// nodeAddr is the address of the Redis node.
 	nodeAddr string
@@ -256,7 +260,9 @@ func (m *pubSubMetadata) close() error {
 	}
 	m.state = connStateClosed
 	close(m.done)
-	close(m.cmdCh)
+	// Don't close cmdCh: sendCommand uses a select with both cmdCh and done.
+	// If both are ready, Go picks randomly, and sending to a closed channel panics.
+	// The event loop exits via <-meta.done instead.
 	m.mu.Unlock()
 
 	// Wait for goroutines to finish
@@ -341,6 +347,15 @@ func (p *pubSubPool) setTopologyMonitor(tm *topologyMonitor) {
 	p.topologyMonitor = tm
 }
 
+// addHashslotPubSub associates a PubSub with a hashslot, skipping duplicates.
+// Caller must hold p.mu.
+func (p *pubSubPool) addHashslotPubSub(hashslot int, pubsub *redis.PubSub) {
+	if slices.Contains(p.hashslotPubSubs[hashslot], pubsub) {
+		return
+	}
+	p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], pubsub)
+}
+
 // getKeyForSlot returns a key that hashes to the given slot.
 func getKeyForSlot(slot int) string {
 	for i := 0; ; i++ {
@@ -356,10 +371,9 @@ func getKeyForSlot(slot int) string {
 func (p *pubSubPool) getPubSubForHashslot(ctx context.Context, hashslot int) (*redis.PubSub, error) {
 	p.mu.RLock()
 	pubsubs := p.hashslotPubSubs[hashslot]
-	p.mu.RUnlock()
 
 	if len(pubsubs) > 0 {
-		// Find least-loaded PubSub
+		// Find least-loaded PubSub (under read lock to protect pubSubMetadata access)
 		var bestPubSub *redis.PubSub
 		minSubs := math.MaxInt
 
@@ -376,9 +390,11 @@ func (p *pubSubPool) getPubSubForHashslot(ctx context.Context, hashslot int) (*r
 		}
 
 		if bestPubSub != nil {
+			p.mu.RUnlock()
 			return bestPubSub, nil
 		}
 	}
+	p.mu.RUnlock()
 
 	// No PubSub available, need to create one
 	return p.createPubSubForHashslot(ctx, hashslot)
@@ -428,7 +444,7 @@ func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int) 
 			// Reuse existing connection
 			// Add to hashslotPubSubs if not already present
 			// (Use a separate check or just append? hashslotPubSubs[hashslot] is likely empty since we are here)
-			p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], bestPubSub)
+			p.addHashslotPubSub(hashslot, bestPubSub)
 			p.mu.Unlock()
 			return bestPubSub, nil
 		}
@@ -444,7 +460,7 @@ func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int) 
 	// Register PubSub
 	p.mu.Lock()
 	p.nodePubSubs[nodeAddr] = append(p.nodePubSubs[nodeAddr], pubsub)
-	p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], pubsub)
+	p.addHashslotPubSub(hashslot, pubsub)
 	p.mu.Unlock()
 
 	return pubsub, nil
@@ -487,7 +503,7 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 
 	// If we found an existing connection, reuse it
 	if bestPubSub != nil {
-		p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], bestPubSub)
+		p.addHashslotPubSub(hashslot, bestPubSub)
 		p.mu.Unlock()
 		return bestPubSub, nil
 	}
@@ -514,7 +530,7 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 		case pubsub := <-pending.result:
 			// Re-acquire lock to update hashslot mapping
 			p.mu.Lock()
-			p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], pubsub)
+			p.addHashslotPubSub(hashslot, pubsub)
 			p.mu.Unlock()
 			return pubsub, nil
 		case err := <-pending.err:
@@ -543,13 +559,26 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 
 	if err != nil {
 		p.mu.Unlock()
-		// Notify any waiting goroutines of the error
-		close(pending.err)
-		return nil, fmt.Errorf("failed to create PubSub to node %s: %w", bestNodeAddr, err)
+		// Notify any waiting goroutines of the error.
+		// Send the actual error rather than closing (close sends zero value / nil).
+		connErr := fmt.Errorf("failed to create PubSub to node %s: %w", bestNodeAddr, err)
+		go func() {
+			for {
+				select {
+				case pending.err <- connErr:
+					// Successfully notified a waiter
+				default:
+					// No more waiters
+					close(pending.err)
+					return
+				}
+			}
+		}()
+		return nil, connErr
 	}
 
 	p.nodePubSubs[bestNodeAddr] = append(p.nodePubSubs[bestNodeAddr], pubsub)
-	p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], pubsub)
+	p.addHashslotPubSub(hashslot, pubsub)
 	p.mu.Unlock()
 
 	// Notify any waiting goroutines (they will add their own hashslot mapping)
@@ -607,9 +636,11 @@ func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*
 
 	var workerPool *WorkerPool
 	var lifecycleCtx context.Context
+	var callbackWg *sync.WaitGroup
 	if sm != nil {
 		workerPool = sm.workerPool
 		lifecycleCtx = sm.lifecycleCtx
+		callbackWg = &sm.callbackWg
 	}
 	if lifecycleCtx == nil {
 		lifecycleCtx = context.Background()
@@ -622,6 +653,7 @@ func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*
 		recorder:             p.config.recorder,
 		workerPool:           workerPool,
 		lifecycleCtx:         lifecycleCtx,
+		callbackWg:           callbackWg,
 		nodeAddr:             nodeAddr,
 		subscriptions:        make(map[string][]*subscription),
 		pendingSubscriptions: make(map[string]*subscription),

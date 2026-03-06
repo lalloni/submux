@@ -4,6 +4,29 @@ All notable changes to the submux project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Topology resubscribe context leak**: `defer cancel()` inside nested loops in `resubscribeOnNewNode` caused context timers to accumulate until function return. Replaced with explicit `cancel()` at end of each iteration and before `continue` to release resources promptly.
+- **Event loop no longer treats context cancellation as connection failure**: When `sendRedisCommand` returned `context.Canceled` or `context.DeadlineExceeded` (e.g., from an unsubscribe with a tight deadline), the event loop incorrectly marked the entire PubSub connection as failed and exited, killing all subscriptions sharing that connection. Context errors are now treated as caller-initiated and do not trigger connection failure handling.
+- **Partial subscribe cleanup now uses fresh context**: When subscribing to multiple channels fails partway through (e.g., due to context deadline), the cleanup `unsubscribeSubscription` call previously used the same expired `ctx`. UNSUBSCRIBE commands would fail, leaving orphaned server-side subscriptions. Cleanup now uses `context.Background()` to guarantee UNSUBSCRIBE commands are sent.
+- **Unsubscribe uses `context.Background()` for Redis commands**: `Unsubscribe(ctx)` now uses `context.Background()` for both the command's context and the `sendCommand` call, preventing orphaned server-side subscriptions when the caller's context is already cancelled.
+- **Unsubscribe waits for Redis confirmation**: The response channel from unsubscribe commands is now read, surfacing errors from the event loop. Metadata cleanup is deferred until after the response is received.
+- **Topology goroutines tracked in WaitGroup**: `triggerRefresh` and `handleMigration` goroutines are now tracked in `topologyMonitor.wg`, ensuring `stop()` waits for all spawned goroutines to complete.
+- **Migration resubscription respects parent context**: `resubscribeOnNewNode` now accepts a migration context with timeout, used for connection creation and as parent for per-command contexts. The migration timeout is now enforced rather than advisory.
+- **Fallback callback goroutines tracked by WaitGroup**: When the worker pool rejects a task (stopped or full), fallback goroutines are now tracked via `callbackWg`. `Close()` waits for these goroutines to complete before returning.
+- **`TrySubmit` no longer panics on stopped pool**: `WorkerPool.TrySubmit` now checks the pool context before attempting to send on the task channel, preventing a panic from sending on a closed channel.
+- **WorkerPool Stop/submit race**: `Stop()` previously closed `taskQueue` before calling `cancel()`, creating a race where concurrent `Submit`, `TrySubmit`, or `SubmitWithContext` could pass the `ctx.Done()` check then panic sending on the already-closed channel. Fixed by: (1) calling `cancel()` first so blocked submitters unblock; (2) adding `submitMu` so `Stop()` waits for any in-flight send before closing the channel.
+- **Subscribe cleanup no longer hangs when event loop exits**: When `subscribe()` fails partway through, cleanup calls `unsubscribeSubscription(context.Background(), sub)`. Phase 2 waits for event loop responses; with `context.Background()`, `ctx.Done()` never fires. If the event loop exited (e.g., connection failure) after the command was queued but before processing, the caller would hang forever. A 5-second timeout is now applied when the context has no deadline.
+- **Topology triggerRefresh/handleMigration WaitGroup race**: The `<-tm.done` check and `tm.wg.Add(1)` were not atomic. If `stop()` ran between the select and Add(1), `Wait()` could return before Add(1), causing "sync: WaitGroup misuse" panic. Both functions now call Add(1) before checking done; if done is closed, they call Done() and return without spawning.
+
+### Changed
+- **Context Propagation in Unsubscribe**: `Sub.Unsubscribe(ctx)` now threads the caller's `context.Context` all the way through to the Redis command, enabling cancellation and deadline control.
+  - Added `ctx` field to internal `command` struct to carry context across the event loop channel boundary
+  - `sendRedisCommand` uses the command's context instead of `context.Background()`
+  - `unsubscribeSubscription` now returns the first `sendCommand` error instead of silently discarding errors
+  - Subscribe path also propagates context to the command struct
+  - Topology resubscribe commands now carry their timeout context in the command struct
+  - Added `migrationTimeout` to `getPubSubForHashslot` call during topology resubscribe to prevent indefinite blocking
+
 ### Added
 - **Comprehensive Documentation Improvements**: Major enhancement to all documentation types
   - **Troubleshooting Guide**: Added new troubleshooting section to README.md covering common issues (messages not received, slow delivery, migration handling, memory leaks) with diagnostics and solutions

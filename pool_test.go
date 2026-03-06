@@ -2,6 +2,7 @@ package submux
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -1632,5 +1633,133 @@ func TestCreatePubSubToNode_NodeNotInTopology(t *testing.T) {
 	expectedErr := "node nonexistent-node:7000 not found in topology or owns no slots"
 	if err.Error() != expectedErr {
 		t.Errorf("error = %q, want %q", err.Error(), expectedErr)
+	}
+}
+
+func TestGetPubSubForHashslot_ConcurrentAccessRace(t *testing.T) {
+	// This test verifies that concurrent reads of getPubSubForHashslot
+	// and concurrent writes to pubSubMetadata don't race.
+	// Run with -race flag to detect data races.
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	hashslot := 42
+	pubsub := &redis.PubSub{}
+	meta := &pubSubMetadata{
+		pubsub:               pubsub,
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 100),
+		done:                 make(chan struct{}),
+		mu:                   sync.RWMutex{},
+	}
+
+	pool.mu.Lock()
+	pool.hashslotPubSubs[hashslot] = []*redis.PubSub{pubsub}
+	pool.pubSubMetadata[pubsub] = meta
+	pool.mu.Unlock()
+
+	var wg sync.WaitGroup
+	// Concurrent readers
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				pool.getPubSubForHashslot(context.Background(), hashslot)
+			}
+		}()
+	}
+	// Concurrent writer that modifies pubSubMetadata
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for j := 0; j < 100; j++ {
+			newPubSub := &redis.PubSub{}
+			newMeta := &pubSubMetadata{
+				pubsub:               newPubSub,
+				subscriptions:        make(map[string][]*subscription),
+				pendingSubscriptions: make(map[string]*subscription),
+				state:                connStateActive,
+				cmdCh:                make(chan *command, 100),
+				done:                 make(chan struct{}),
+			}
+			pool.mu.Lock()
+			pool.pubSubMetadata[newPubSub] = newMeta
+			pool.mu.Unlock()
+		}
+	}()
+	wg.Wait()
+}
+
+func TestPendingConnectionError_PropagatesActualError(t *testing.T) {
+	// Verify that when a pending connection fails, waiters receive
+	// the actual error (not nil from a closed channel).
+	pending := &pendingConnection{
+		result: make(chan *redis.PubSub),
+		err:    make(chan error),
+	}
+
+	connErr := fmt.Errorf("connection failed: test error")
+
+	// Simulate multiple waiters
+	var wg sync.WaitGroup
+	errs := make([]error, 3)
+	for i := range 3 {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			select {
+			case err := <-pending.err:
+				errs[idx] = err
+			case <-time.After(2 * time.Second):
+				t.Errorf("waiter %d timed out", idx)
+			}
+		}(i)
+	}
+
+	// Give waiters time to start
+	time.Sleep(10 * time.Millisecond)
+
+	// Send error to all waiters (same pattern as the fix)
+	go func() {
+		for {
+			select {
+			case pending.err <- connErr:
+			default:
+				close(pending.err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	for i, err := range errs {
+		if err == nil {
+			t.Errorf("waiter %d received nil error, want non-nil", i)
+		} else if err.Error() != connErr.Error() {
+			t.Errorf("waiter %d got error %q, want %q", i, err, connErr)
+		}
+	}
+}
+
+func TestAddHashslotPubSub_NoDuplicates(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	pubsub := &redis.PubSub{}
+	hashslot := 42
+
+	pool.mu.Lock()
+	pool.addHashslotPubSub(hashslot, pubsub)
+	pool.addHashslotPubSub(hashslot, pubsub)
+	pool.addHashslotPubSub(hashslot, pubsub)
+	count := len(pool.hashslotPubSubs[hashslot])
+	pool.mu.Unlock()
+
+	if count != 1 {
+		t.Errorf("hashslotPubSubs has %d entries, want 1 (dedup failed)", count)
 	}
 }

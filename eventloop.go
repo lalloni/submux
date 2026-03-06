@@ -2,6 +2,7 @@ package submux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -20,11 +21,10 @@ func runEventLoop(meta *pubSubMetadata) {
 
 	for {
 		select {
-		case cmd, ok := <-meta.cmdCh:
-			if !ok {
-				return
+		case cmd := <-meta.cmdCh:
+			if cmd == nil {
+				continue
 			}
-
 			// Send command to Redis
 			err := sendRedisCommand(meta, cmd)
 			if err != nil {
@@ -40,7 +40,12 @@ func runEventLoop(meta *pubSubMetadata) {
 					default:
 					}
 				}
-				// Mark PubSub as failed
+				// Context cancellation/deadline are caller-initiated, not connection failures.
+				// Do not mark the connection as failed or exit the event loop.
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					continue
+				}
+				// Genuine connection/Redis error - treat as fatal
 				meta.setState(connStateFailed)
 				meta.logger.Error("submux: command send error", "node", meta.nodeAddr, "error", err)
 				return
@@ -78,7 +83,10 @@ func runEventLoop(meta *pubSubMetadata) {
 
 // sendRedisCommand sends a command to Redis using the PubSub connection.
 func sendRedisCommand(meta *pubSubMetadata, cmd *command) error {
-	ctx := context.Background()
+	ctx := cmd.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	// Convert []any to []string
 	args := make([]string, len(cmd.args))
@@ -136,7 +144,7 @@ func checkAndHandleRedirect(meta *pubSubMetadata, err error) {
 
 // processResponse processes a Redis PubSub message or subscription confirmation.
 // ChannelWithSubscriptions() delivers either *redis.Subscription (confirmations) or *redis.Message (regular messages).
-func processResponse(meta *pubSubMetadata, msg interface{}) error {
+func processResponse(meta *pubSubMetadata, msg any) error {
 	// First, check if this is a subscription confirmation
 	subMsg, ok := msg.(*redis.Subscription)
 	if ok {
@@ -216,7 +224,7 @@ func handleMessageFromPubSub(meta *pubSubMetadata, channel, payload string) erro
 	}
 
 	for _, sub := range subs {
-		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.lifecycleCtx, sub.callback, msg)
+		invokeCallback(meta.lifecycleCtx, meta.logger, meta.recorder, meta.workerPool, meta.callbackWg, sub.callback, msg)
 	}
 	return nil
 }
@@ -243,7 +251,7 @@ func handlePMessageFromPubSub(meta *pubSubMetadata, pattern, channel, payload st
 	}
 
 	for _, sub := range subs {
-		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.lifecycleCtx, sub.callback, msg)
+		invokeCallback(meta.lifecycleCtx, meta.logger, meta.recorder, meta.workerPool, meta.callbackWg, sub.callback, msg)
 	}
 	return nil
 }
@@ -272,7 +280,7 @@ func handleSMessageFromPubSub(meta *pubSubMetadata, channel, payload string) err
 	}
 
 	for _, sub := range subs {
-		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.lifecycleCtx, sub.callback, msg)
+		invokeCallback(meta.lifecycleCtx, meta.logger, meta.recorder, meta.workerPool, meta.callbackWg, sub.callback, msg)
 	}
 	return nil
 }
@@ -298,6 +306,6 @@ func notifySubscriptionsOfFailure(meta *pubSubMetadata, err error) {
 			Timestamp:        time.Now(),
 			SubscriptionType: sub.subType,
 		}
-		invokeCallback(meta.logger, meta.recorder, meta.workerPool, meta.lifecycleCtx, sub.callback, msg)
+		invokeCallback(meta.lifecycleCtx, meta.logger, meta.recorder, meta.workerPool, meta.callbackWg, sub.callback, msg)
 	}
 }

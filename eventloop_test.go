@@ -790,8 +790,9 @@ func TestRunEventLoop_CmdChannelClosed(t *testing.T) {
 
 	go runEventLoop(meta)
 
-	// Close command channel
-	close(meta.cmdCh)
+	// Signal done to exit the event loop (cmdCh is no longer closed to
+	// avoid send-to-closed-channel panics in sendCommand)
+	close(meta.done)
 
 	done := make(chan struct{})
 	go func() {
@@ -803,7 +804,7 @@ func TestRunEventLoop_CmdChannelClosed(t *testing.T) {
 	case <-done:
 		// Success
 	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for event loop to exit after cmdCh closed")
+		t.Fatal("timeout waiting for event loop to exit after done closed")
 	}
 }
 
@@ -974,6 +975,7 @@ func TestSendRedisCommand_AllCommandTypes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cmd := &command{
+				ctx:  context.Background(),
 				cmd:  tt.cmdType,
 				args: []any{"test-channel"},
 			}
@@ -1006,6 +1008,7 @@ func TestSendRedisCommand_UnknownCommand(t *testing.T) {
 	}
 
 	cmd := &command{
+		ctx:  context.Background(),
 		cmd:  "INVALID_COMMAND",
 		args: []any{"test-channel"},
 	}
@@ -1040,6 +1043,7 @@ func TestSendRedisCommand_RedirectDetection(t *testing.T) {
 	}
 
 	cmd := &command{
+		ctx:  context.Background(),
 		cmd:  cmdSubscribe,
 		args: []any{"test-channel"},
 	}
@@ -1152,5 +1156,67 @@ func TestHandleSubscriptionConfirmation_AllUnsubscribeKinds(t *testing.T) {
 				t.Errorf("unexpected error for %s: %v", tt.kind, err)
 			}
 		})
+	}
+}
+
+func TestSendCommand_AfterClose_NoPanic(t *testing.T) {
+	// Verify that sendCommand after close() does not panic.
+	// With a buffered cmdCh, the send may succeed (landing in the buffer)
+	// or return an error via <-m.done — both are acceptable. The key
+	// property is that it never panics on a send to a closed channel.
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 100),
+		done:                 make(chan struct{}),
+	}
+
+	meta.close()
+
+	// Must not panic
+	cmd := &command{
+		ctx:      context.Background(),
+		cmd:      cmdSubscribe,
+		args:     []any{"test"},
+		response: make(chan error, 1),
+	}
+	meta.sendCommand(context.Background(), cmd)
+}
+
+func TestSendCommand_ConcurrentWithClose_NoPanic(t *testing.T) {
+	// Stress test: concurrent sendCommand calls racing with close().
+	// This test should be run with -race and will panic without the fix.
+	for range 100 {
+		meta := &pubSubMetadata{
+			subscriptions:        make(map[string][]*subscription),
+			pendingSubscriptions: make(map[string]*subscription),
+			state:                connStateActive,
+			cmdCh:                make(chan *command, 1),
+			done:                 make(chan struct{}),
+		}
+
+		var wg sync.WaitGroup
+		// Goroutine that closes
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			meta.close()
+		}()
+		// Goroutines that send commands
+		for range 5 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				cmd := &command{
+					ctx:      context.Background(),
+					cmd:      cmdSubscribe,
+					args:     []any{"test"},
+					response: make(chan error, 1),
+				}
+				meta.sendCommand(context.Background(), cmd)
+			}()
+		}
+		wg.Wait()
 	}
 }

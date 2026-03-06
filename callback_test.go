@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func TestInvokeCallback_Normal(t *testing.T) {
@@ -30,7 +32,7 @@ func TestInvokeCallback_Normal(t *testing.T) {
 		Payload: "hello",
 	}
 
-	invokeCallback(logger, &noopMetrics{}, nil, context.Background(), callback, testMsg)
+	invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, callback, testMsg)
 
 	// Wait for async callback
 	wg.Wait()
@@ -63,7 +65,7 @@ func TestInvokeCallback_PanicRecovery(t *testing.T) {
 	}
 
 	// This should not panic the test - panic should be recovered
-	invokeCallback(logger, &noopMetrics{}, nil, context.Background(), panicCallback, testMsg)
+	invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, panicCallback, testMsg)
 
 	// Wait for callback to complete
 	<-done
@@ -83,7 +85,7 @@ func TestInvokeCallback_PanicWithNil(t *testing.T) {
 	testMsg := &Message{Type: MessageTypeMessage}
 
 	// Should handle panic(nil) gracefully
-	invokeCallback(logger, &noopMetrics{}, nil, context.Background(), panicCallback, testMsg)
+	invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, panicCallback, testMsg)
 
 	<-done
 	// If we reach here, the test passes
@@ -100,7 +102,7 @@ func TestInvokeCallback_PanicWithError(t *testing.T) {
 
 	testMsg := &Message{Type: MessageTypeMessage}
 
-	invokeCallback(logger, &noopMetrics{}, nil, context.Background(), panicCallback, testMsg)
+	invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, panicCallback, testMsg)
 
 	<-done
 	// If we reach here, the test passes
@@ -120,7 +122,7 @@ func TestInvokeCallback_NilMessage(t *testing.T) {
 		wg.Done()
 	}
 
-	invokeCallback(logger, &noopMetrics{}, nil, context.Background(), callback, nil)
+	invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, callback, nil)
 
 	wg.Wait()
 
@@ -144,13 +146,13 @@ func TestInvokeCallback_Concurrency(t *testing.T) {
 	wg.Add(numCalls)
 
 	// Invoke many callbacks concurrently
-	for i := 0; i < numCalls; i++ {
+	for range numCalls {
 		testMsg := &Message{
 			Type:    MessageTypeMessage,
 			Channel: "concurrent",
 			Payload: "test",
 		}
-		invokeCallback(logger, &noopMetrics{}, nil, context.Background(), callback, testMsg)
+		invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, callback, testMsg)
 	}
 
 	// Wait with timeout
@@ -184,20 +186,20 @@ func TestInvokeCallback_PanicDoesNotAffectOthers(t *testing.T) {
 	wg.Add(numSuccess)
 
 	// First, invoke callbacks that will panic
-	for i := 0; i < numPanics; i++ {
+	for range numPanics {
 		panicCallback := func(ctx context.Context, msg *Message) {
 			panic("intentional panic")
 		}
-		invokeCallback(logger, &noopMetrics{}, nil, context.Background(), panicCallback, &Message{Type: MessageTypeMessage})
+		invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, panicCallback, &Message{Type: MessageTypeMessage})
 	}
 
 	// Then, invoke successful callbacks
-	for i := 0; i < numSuccess; i++ {
+	for range numSuccess {
 		successCallback := func(ctx context.Context, msg *Message) {
 			successCount.Add(1)
 			wg.Done()
 		}
-		invokeCallback(logger, &noopMetrics{}, nil, context.Background(), successCallback, &Message{Type: MessageTypeMessage})
+		invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, successCallback, &Message{Type: MessageTypeMessage})
 	}
 
 	// Wait with timeout
@@ -244,7 +246,7 @@ func TestInvokeCallback_MessageTypes(t *testing.T) {
 			}
 
 			testMsg := &Message{Type: tt.msgType}
-			invokeCallback(logger, &noopMetrics{}, nil, context.Background(), callback, testMsg)
+			invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, callback, testMsg)
 
 			done := make(chan struct{})
 			go func() {
@@ -275,7 +277,7 @@ func TestInvokeCallback_SlowCallback(t *testing.T) {
 	}
 
 	start := time.Now()
-	invokeCallback(logger, &noopMetrics{}, nil, context.Background(), slowCallback, &Message{Type: MessageTypeMessage})
+	invokeCallback(context.Background(), logger, &noopMetrics{}, nil, nil, slowCallback, &Message{Type: MessageTypeMessage})
 	elapsed := time.Since(start)
 
 	// invokeCallback should return immediately (async)
@@ -310,13 +312,13 @@ func TestInvokeCallback_WithWorkerPool(t *testing.T) {
 	wg.Add(numCalls)
 
 	// Invoke callbacks using worker pool
-	for i := 0; i < numCalls; i++ {
+	for range numCalls {
 		testMsg := &Message{
 			Type:    MessageTypeMessage,
 			Channel: "pool-test",
 			Payload: "test",
 		}
-		invokeCallback(logger, &noopMetrics{}, pool, context.Background(), callback, testMsg)
+		invokeCallback(context.Background(), logger, &noopMetrics{}, pool, nil, callback, testMsg)
 	}
 
 	// Wait with timeout
@@ -355,7 +357,7 @@ func TestInvokeCallback_ContextCanceled(t *testing.T) {
 	// Cancel context before invoking callback
 	cancel()
 
-	invokeCallback(logger, &noopMetrics{}, nil, ctx, callback, &Message{Type: MessageTypeMessage})
+	invokeCallback(ctx, logger, &noopMetrics{}, nil, nil, callback, &Message{Type: MessageTypeMessage})
 
 	wg.Wait()
 
@@ -393,7 +395,7 @@ func TestExecuteCallback_NilMessage(t *testing.T) {
 	}
 
 	// Should not panic with nil message
-	executeCallback(logger, &noopMetrics{}, context.Background(), callback, nil)
+	executeCallback(context.Background(), logger, &noopMetrics{}, callback, nil)
 
 	if !calledWithNil {
 		t.Error("callback should have been called with nil message")
@@ -420,7 +422,7 @@ func TestInvokeCallback_WorkerPoolFull_FallbackToGoroutine(t *testing.T) {
 			callCount.Add(1)
 			wg.Done()
 		}
-		invokeCallback(logger, &noopMetrics{}, pool, context.Background(), callback, &Message{Type: MessageTypeMessage})
+		invokeCallback(context.Background(), logger, &noopMetrics{}, pool, nil, callback, &Message{Type: MessageTypeMessage})
 	}
 
 	// Wait with timeout for all callbacks
@@ -440,4 +442,90 @@ func TestInvokeCallback_WorkerPoolFull_FallbackToGoroutine(t *testing.T) {
 	if callCount.Load() != int64(numCalls) {
 		t.Errorf("call count = %d, want %d", callCount.Load(), numCalls)
 	}
+}
+
+func TestClose_WaitsForFallbackCallbacks(t *testing.T) {
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:        []string{"localhost:7000"},
+		DialTimeout:  100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+	})
+	defer clusterClient.Close()
+
+	subMux, _ := New(clusterClient)
+
+	var callbackStarted sync.WaitGroup
+	callbackStarted.Add(1)
+	var callbackCompleted atomic.Bool
+
+	// Invoke a callback with nil pool to force fallback goroutine path
+	invokeCallback(
+		subMux.lifecycleCtx,
+		subMux.config.logger,
+		subMux.config.recorder,
+		nil, // nil pool forces fallback goroutine
+		&subMux.callbackWg,
+		func(ctx context.Context, msg *Message) {
+			callbackStarted.Done()
+			time.Sleep(100 * time.Millisecond)
+			callbackCompleted.Store(true)
+		},
+		&Message{Type: MessageTypeMessage},
+	)
+
+	// Wait for callback to start
+	callbackStarted.Wait()
+
+	// Close should wait for the callback goroutine
+	subMux.Close()
+
+	// EXPECTED: callbackCompleted should be true after Close()
+	if !callbackCompleted.Load() {
+		t.Error("Close() returned before fallback callback completed")
+	}
+}
+
+func TestInvokeCallback_FallbackGoroutineTracked(t *testing.T) {
+	logger := slog.Default()
+	var wg sync.WaitGroup
+
+	var completed atomic.Bool
+	callback := func(ctx context.Context, msg *Message) {
+		time.Sleep(50 * time.Millisecond)
+		completed.Store(true)
+	}
+
+	// Stopped pool forces fallback goroutine path
+	pool := NewWorkerPool(2, 10)
+	pool.Start()
+	pool.Stop() // Stop pool so Submit fails
+
+	invokeCallback(context.Background(), logger, &noopMetrics{}, pool, &wg, callback, &Message{Type: MessageTypeMessage})
+
+	// wg.Wait() should block until the fallback goroutine completes
+	wg.Wait()
+
+	if !completed.Load() {
+		t.Error("fallback goroutine should have completed after wg.Wait()")
+	}
+}
+
+func TestExecuteCallback_NilLogger_PanicRecovery(t *testing.T) {
+	// Verify that a nil logger does not cause a secondary panic
+	// when the callback panics.
+	recorder := &noopMetrics{}
+	msg := &Message{
+		Type:             MessageTypeMessage,
+		Channel:          "test",
+		Payload:          "data",
+		SubscriptionType: subTypeSubscribe,
+	}
+
+	panickingCallback := func(ctx context.Context, msg *Message) {
+		panic("intentional test panic")
+	}
+
+	// This must not panic (the nil logger should be handled gracefully)
+	executeCallback(context.Background(), nil, recorder, panickingCallback, msg)
 }

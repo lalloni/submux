@@ -1,6 +1,9 @@
 package submux
 
-import "strings"
+import (
+	"math/rand"
+	"strings"
+)
 
 // Hashslot calculates the Redis hashslot for a channel name.
 // It uses the same hashslot calculation as go-redis/v9 (from internal/hashtag package),
@@ -32,9 +35,7 @@ func extractHashtag(key string) string {
 // randomSlot returns a random slot number (used when channel is empty).
 // This matches go-redis/v9's internal/hashtag.RandomSlot function.
 func randomSlot() int {
-	// Simple pseudo-random using channel name hash
-	// In practice, empty channels shouldn't occur, but we need to handle it
-	return 0
+	return rand.Intn(16384)
 }
 
 // crc16sum calculates CRC16 checksum using the same table as go-redis/v9.
