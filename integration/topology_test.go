@@ -78,11 +78,7 @@ func TestHashslotMigration(t *testing.T) {
 	// Verify connectivity (no retry needed - cluster is healthy)
 	err = pubClient.SPublish(context.Background(), channelName, "before-migration").Err()
 	if err != nil {
-		// Fallback to regular publish if sharded not supported
-		err = pubClient.Publish(context.Background(), channelName, "before-migration").Err()
-	}
-	if err != nil {
-		t.Fatalf("Publish failed: %v", err)
+		t.Fatalf("SPublish failed: %v", err)
 	}
 
 	select {
@@ -171,11 +167,7 @@ func TestAutoResubscribe(t *testing.T) {
 	// Verify initial connectivity (no retry needed - cluster is healthy)
 	err = client.SPublish(context.Background(), channelName, "initial").Err()
 	if err != nil {
-		// Fallback to regular publish if sharded not supported
-		err = client.Publish(context.Background(), channelName, "initial").Err()
-	}
-	if err != nil {
-		t.Fatalf("Initial publish failed: %v", err)
+		t.Fatalf("Initial SPublish failed: %v", err)
 	}
 
 	select {
@@ -214,8 +206,9 @@ func TestAutoResubscribe(t *testing.T) {
 		t.Fatal("Timeout waiting for SubMux to detect migration (no EventMigration signal)")
 	}
 
-	// Reload state to ensure client knows about new topology for correct routing
+	// Force topology refresh so SPublish routes to the new owner
 	client.ReloadState(context.Background())
+	time.Sleep(100 * time.Millisecond) // allow async reload to complete
 
 	// Publish repeatedly until a message is received, confirming resubscription completed.
 	// The resubscription is in progress (started after migration detection above).
@@ -227,13 +220,11 @@ func TestAutoResubscribe(t *testing.T) {
 
 	var received bool
 	for !received {
-		// Publish
+		// Publish using SPublish only — Publish uses a different pub/sub namespace
+		// and would never reach an SSubscribe listener
 		err = client.SPublish(context.Background(), channelName, "after-migration").Err()
 		if err != nil {
-			err = client.Publish(context.Background(), channelName, "after-migration").Err()
-		}
-		if err != nil {
-			t.Logf("Failed to publish: %v", err)
+			t.Logf("SPublish failed (will retry): %v", err)
 		}
 
 		select {
