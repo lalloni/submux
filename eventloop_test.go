@@ -1157,3 +1157,65 @@ func TestHandleSubscriptionConfirmation_AllUnsubscribeKinds(t *testing.T) {
 		})
 	}
 }
+
+func TestSendCommand_AfterClose_NoPanic(t *testing.T) {
+	// Verify that sendCommand after close() does not panic.
+	// With a buffered cmdCh, the send may succeed (landing in the buffer)
+	// or return an error via <-m.done — both are acceptable. The key
+	// property is that it never panics on a send to a closed channel.
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 100),
+		done:                 make(chan struct{}),
+	}
+
+	meta.close()
+
+	// Must not panic
+	cmd := &command{
+		ctx:      context.Background(),
+		cmd:      cmdSubscribe,
+		args:     []any{"test"},
+		response: make(chan error, 1),
+	}
+	meta.sendCommand(context.Background(), cmd)
+}
+
+func TestSendCommand_ConcurrentWithClose_NoPanic(t *testing.T) {
+	// Stress test: concurrent sendCommand calls racing with close().
+	// This test should be run with -race and will panic without the fix.
+	for range 100 {
+		meta := &pubSubMetadata{
+			subscriptions:        make(map[string][]*subscription),
+			pendingSubscriptions: make(map[string]*subscription),
+			state:                connStateActive,
+			cmdCh:                make(chan *command, 1),
+			done:                 make(chan struct{}),
+		}
+
+		var wg sync.WaitGroup
+		// Goroutine that closes
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			meta.close()
+		}()
+		// Goroutines that send commands
+		for range 5 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				cmd := &command{
+					ctx:      context.Background(),
+					cmd:      cmdSubscribe,
+					args:     []any{"test"},
+					response: make(chan error, 1),
+				}
+				meta.sendCommand(context.Background(), cmd)
+			}()
+		}
+		wg.Wait()
+	}
+}

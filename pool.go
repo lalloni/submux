@@ -260,7 +260,9 @@ func (m *pubSubMetadata) close() error {
 	}
 	m.state = connStateClosed
 	close(m.done)
-	close(m.cmdCh)
+	// Don't close cmdCh: sendCommand uses a select with both cmdCh and done.
+	// If both are ready, Go picks randomly, and sending to a closed channel panics.
+	// The event loop exits via <-meta.done instead.
 	m.mu.Unlock()
 
 	// Wait for goroutines to finish
