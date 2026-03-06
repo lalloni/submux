@@ -1744,3 +1744,22 @@ func TestPendingConnectionError_PropagatesActualError(t *testing.T) {
 		}
 	}
 }
+
+func TestAddHashslotPubSub_NoDuplicates(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	pubsub := &redis.PubSub{}
+	hashslot := 42
+
+	pool.mu.Lock()
+	pool.addHashslotPubSub(hashslot, pubsub)
+	pool.addHashslotPubSub(hashslot, pubsub)
+	pool.addHashslotPubSub(hashslot, pubsub)
+	count := len(pool.hashslotPubSubs[hashslot])
+	pool.mu.Unlock()
+
+	if count != 1 {
+		t.Errorf("hashslotPubSubs has %d entries, want 1 (dedup failed)", count)
+	}
+}

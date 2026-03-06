@@ -347,6 +347,15 @@ func (p *pubSubPool) setTopologyMonitor(tm *topologyMonitor) {
 	p.topologyMonitor = tm
 }
 
+// addHashslotPubSub associates a PubSub with a hashslot, skipping duplicates.
+// Caller must hold p.mu.
+func (p *pubSubPool) addHashslotPubSub(hashslot int, pubsub *redis.PubSub) {
+	if slices.Contains(p.hashslotPubSubs[hashslot], pubsub) {
+		return
+	}
+	p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], pubsub)
+}
+
 // getKeyForSlot returns a key that hashes to the given slot.
 func getKeyForSlot(slot int) string {
 	for i := 0; ; i++ {
@@ -435,7 +444,7 @@ func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int) 
 			// Reuse existing connection
 			// Add to hashslotPubSubs if not already present
 			// (Use a separate check or just append? hashslotPubSubs[hashslot] is likely empty since we are here)
-			p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], bestPubSub)
+			p.addHashslotPubSub(hashslot, bestPubSub)
 			p.mu.Unlock()
 			return bestPubSub, nil
 		}
@@ -451,7 +460,7 @@ func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int) 
 	// Register PubSub
 	p.mu.Lock()
 	p.nodePubSubs[nodeAddr] = append(p.nodePubSubs[nodeAddr], pubsub)
-	p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], pubsub)
+	p.addHashslotPubSub(hashslot, pubsub)
 	p.mu.Unlock()
 
 	return pubsub, nil
@@ -494,7 +503,7 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 
 	// If we found an existing connection, reuse it
 	if bestPubSub != nil {
-		p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], bestPubSub)
+		p.addHashslotPubSub(hashslot, bestPubSub)
 		p.mu.Unlock()
 		return bestPubSub, nil
 	}
@@ -521,7 +530,7 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 		case pubsub := <-pending.result:
 			// Re-acquire lock to update hashslot mapping
 			p.mu.Lock()
-			p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], pubsub)
+			p.addHashslotPubSub(hashslot, pubsub)
 			p.mu.Unlock()
 			return pubsub, nil
 		case err := <-pending.err:
@@ -569,7 +578,7 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 	}
 
 	p.nodePubSubs[bestNodeAddr] = append(p.nodePubSubs[bestNodeAddr], pubsub)
-	p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], pubsub)
+	p.addHashslotPubSub(hashslot, pubsub)
 	p.mu.Unlock()
 
 	// Notify any waiting goroutines (they will add their own hashslot mapping)
