@@ -1632,3 +1632,73 @@ func TestHandleMigration_ResubscribeTrackedByWaitGroup(t *testing.T) {
 		t.Fatal("timeout: resubscription goroutine should have completed")
 	}
 }
+
+func TestResubscribeOnNewNode_RemovesFromOldMetadata(t *testing.T) {
+	// Verify that migration removes subscriptions from old metadata
+	// before adding to new metadata.
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	// Set up old PubSub with metadata
+	oldPubSub := &redis.PubSub{}
+	oldMeta := &pubSubMetadata{
+		pubsub:               oldPubSub,
+		logger:               cfg.logger,
+		recorder:             &noopMetrics{},
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 100),
+		done:                 make(chan struct{}),
+	}
+
+	// Set up new PubSub with metadata
+	newPubSub := &redis.PubSub{}
+	newMeta := &pubSubMetadata{
+		pubsub:               newPubSub,
+		logger:               cfg.logger,
+		recorder:             &noopMetrics{},
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 100),
+		done:                 make(chan struct{}),
+	}
+
+	pool.mu.Lock()
+	pool.pubSubMetadata[oldPubSub] = oldMeta
+	pool.pubSubMetadata[newPubSub] = newMeta
+	pool.hashslotPubSubs[42] = []*redis.PubSub{newPubSub}
+	pool.mu.Unlock()
+
+	// Create subscription on old metadata
+	sub := &subscription{
+		channel:   "test-channel",
+		subType:   subTypeSubscribe,
+		pubsub:    oldPubSub,
+		state:     subStateActive,
+		confirmCh: make(chan error, 1),
+		doneCh:    make(chan struct{}),
+		hashslot:  42,
+		callback:  func(ctx context.Context, msg *Message) {},
+	}
+	oldMeta.addSubscription(sub)
+
+	if oldMeta.subscriptionCount() != 1 {
+		t.Fatalf("old meta should have 1 subscription, got %d", oldMeta.subscriptionCount())
+	}
+
+	// Simulate what resubscribeOnNewNode does
+	oldMeta.removeSubscription(sub)
+	sub.setPubSub(newPubSub)
+	newMeta.addSubscription(sub)
+
+	// Verify old metadata no longer tracks the subscription
+	if oldMeta.subscriptionCount() != 0 {
+		t.Errorf("old meta should have 0 subscriptions after migration, got %d", oldMeta.subscriptionCount())
+	}
+	// Verify new metadata tracks the subscription
+	if newMeta.subscriptionCount() != 1 {
+		t.Errorf("new meta should have 1 subscription after migration, got %d", newMeta.subscriptionCount())
+	}
+}

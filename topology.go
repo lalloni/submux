@@ -735,6 +735,12 @@ func (tm *topologyMonitor) resubscribeOnNewNode(ctx context.Context, subs []*sub
 				continue
 			}
 			for _, sub := range channelSubs {
+				// Remove subscription from old metadata before migrating
+				oldMeta := tm.subMux.pool.getMetadata(sub.getPubSub())
+				if oldMeta != nil {
+					oldMeta.removeSubscription(sub)
+				}
+
 				// Update subscription's PubSub reference
 				sub.setPubSub(newPubsub)
 
