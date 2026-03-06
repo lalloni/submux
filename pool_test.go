@@ -2,6 +2,7 @@ package submux
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -1690,4 +1691,56 @@ func TestGetPubSubForHashslot_ConcurrentAccessRace(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+func TestPendingConnectionError_PropagatesActualError(t *testing.T) {
+	// Verify that when a pending connection fails, waiters receive
+	// the actual error (not nil from a closed channel).
+	pending := &pendingConnection{
+		result: make(chan *redis.PubSub),
+		err:    make(chan error),
+	}
+
+	connErr := fmt.Errorf("connection failed: test error")
+
+	// Simulate multiple waiters
+	var wg sync.WaitGroup
+	errs := make([]error, 3)
+	for i := range 3 {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			select {
+			case err := <-pending.err:
+				errs[idx] = err
+			case <-time.After(2 * time.Second):
+				t.Errorf("waiter %d timed out", idx)
+			}
+		}(i)
+	}
+
+	// Give waiters time to start
+	time.Sleep(10 * time.Millisecond)
+
+	// Send error to all waiters (same pattern as the fix)
+	go func() {
+		for {
+			select {
+			case pending.err <- connErr:
+			default:
+				close(pending.err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	for i, err := range errs {
+		if err == nil {
+			t.Errorf("waiter %d received nil error, want non-nil", i)
+		} else if err.Error() != connErr.Error() {
+			t.Errorf("waiter %d got error %q, want %q", i, err, connErr)
+		}
+	}
 }

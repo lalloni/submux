@@ -548,9 +548,22 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 
 	if err != nil {
 		p.mu.Unlock()
-		// Notify any waiting goroutines of the error
-		close(pending.err)
-		return nil, fmt.Errorf("failed to create PubSub to node %s: %w", bestNodeAddr, err)
+		// Notify any waiting goroutines of the error.
+		// Send the actual error rather than closing (close sends zero value / nil).
+		connErr := fmt.Errorf("failed to create PubSub to node %s: %w", bestNodeAddr, err)
+		go func() {
+			for {
+				select {
+				case pending.err <- connErr:
+					// Successfully notified a waiter
+				default:
+					// No more waiters
+					close(pending.err)
+					return
+				}
+			}
+		}()
+		return nil, connErr
 	}
 
 	p.nodePubSubs[bestNodeAddr] = append(p.nodePubSubs[bestNodeAddr], pubsub)
