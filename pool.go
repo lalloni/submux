@@ -74,6 +74,11 @@ type pubSubMetadata struct {
 	// pubsub is the PubSub connection.
 	pubsub *redis.PubSub
 
+	// directClient is set when the PubSub was created via a direct redis.Client
+	// (instead of the ClusterClient). It must be closed when the PubSub is closed
+	// to avoid leaking connections. Nil for PubSubs created via the ClusterClient.
+	directClient *redis.Client
+
 	// logger is the logger for this connection.
 	logger *slog.Logger
 
@@ -267,6 +272,13 @@ func (m *pubSubMetadata) close() error {
 
 	// Wait for goroutines to finish
 	m.wg.Wait()
+
+	// Close the direct client if this PubSub was created via a direct connection.
+	// This must happen after the event loop exits to avoid closing the underlying
+	// connection pool while the PubSub is still in use.
+	if m.directClient != nil {
+		m.directClient.Close()
+	}
 
 	return nil
 }
@@ -600,16 +612,9 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 }
 
 // createPubSubToNode creates a new PubSub connection to a specific node.
-// It routes the request through the ClusterClient using a probe channel that hashes
-// to a slot owned by the target node (per submux's topology monitor), ensuring the
-// connection lands on the right node even if go-redis has stale routing info.
-//
-// NOTE: We intentionally do NOT use initialChannel for routing here. During migrations,
-// go-redis's ClusterClient may have stale topology and would route initialChannel to
-// the OLD node. By using getAnySlotForNode from our own topology monitor, we guarantee
-// the connection goes to the correct new node.
+// It uses a direct redis.Client to the target node address, bypassing the
+// ClusterClient's slot routing which may be stale after migrations.
 func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*redis.PubSub, error) {
-	// Find a slot owned by the target node using our topology monitor
 	p.mu.RLock()
 	tm := p.topologyMonitor
 	p.mu.RUnlock()
@@ -618,16 +623,13 @@ func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*
 		return nil, fmt.Errorf("topology monitor not initialized")
 	}
 
-	slot, ok := tm.getAnySlotForNode(nodeAddr)
-	if !ok {
-		return nil, fmt.Errorf("node %s not found in topology or owns no slots", nodeAddr)
-	}
-
-	// Generate a probe channel that hashes to this slot to force connection to this node
-	key := getKeyForSlot(slot)
-	channel := fmt.Sprintf("__submux_probe__:%s", key)
-
-	pubsub := p.clusterClient.Subscribe(ctx, channel)
+	// Create a direct client to the target node to guarantee the PubSub connects
+	// to the intended node. Using the ClusterClient's Subscribe would route via
+	// its internal slot map, which may be stale after migrations — causing the
+	// PubSub to connect to the wrong node and subsequent SSUBSCRIBE commands to
+	// fail with MOVED errors.
+	directClient := redis.NewClient(&redis.Options{Addr: nodeAddr})
+	pubsub := directClient.Subscribe(ctx)
 
 	// Get worker pool and lifecycle context from SubMux
 	p.mu.RLock()
@@ -649,6 +651,7 @@ func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*
 	// Create metadata for this PubSub
 	meta := &pubSubMetadata{
 		pubsub:               pubsub,
+		directClient:         directClient,
 		logger:               p.config.logger.With("component", "pubsub_conn", "node", nodeAddr),
 		recorder:             p.config.recorder,
 		workerPool:           workerPool,

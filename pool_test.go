@@ -1609,28 +1609,18 @@ func TestPubSubMetadata_AddSubscriptionAndCheckFirst_DifferentChannels(t *testin
 	}
 }
 
-func TestCreatePubSubToNode_NodeNotInTopology(t *testing.T) {
+func TestCreatePubSubToNode_NoTopologyMonitor(t *testing.T) {
 	cfg := defaultConfig()
 	pool := newPubSubPool(nil, cfg)
 
-	// Create a topology monitor with a state that doesn't include the target node
-	tm := &topologyMonitor{
-		config:       cfg,
-		currentState: buildTopologyState(map[int]string{100: "other-node:7000"}),
-		done:         make(chan struct{}),
-	}
-
-	pool.mu.Lock()
-	pool.topologyMonitor = tm
-	pool.mu.Unlock()
-
+	// No topology monitor set — should fail
 	ctx := context.Background()
-	_, err := pool.createPubSubToNode(ctx, "nonexistent-node:7000")
+	_, err := pool.createPubSubToNode(ctx, "some-node:7000")
 
 	if err == nil {
-		t.Error("expected error when node not found in topology")
+		t.Error("expected error when topology monitor not initialized")
 	}
-	expectedErr := "node nonexistent-node:7000 not found in topology or owns no slots"
+	expectedErr := "topology monitor not initialized"
 	if err.Error() != expectedErr {
 		t.Errorf("error = %q, want %q", err.Error(), expectedErr)
 	}

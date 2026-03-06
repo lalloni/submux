@@ -206,12 +206,12 @@ func TestAutoResubscribe(t *testing.T) {
 		t.Fatal("Timeout waiting for SubMux to detect migration (no EventMigration signal)")
 	}
 
-	// Trigger topology refresh so SPublish eventually routes to the new owner.
-	// ReloadState is async; the retry loop below handles the race.
-	client.ReloadState(context.Background())
-
 	// Publish repeatedly until a message is received, confirming resubscription completed.
 	// The resubscription is in progress (started after migration detection above).
+	// Each failed SPublish triggers a topology refresh so the client eventually routes
+	// to the new owner (ReloadState is async and may fail silently).
+	client.ReloadState(context.Background())
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -220,11 +220,10 @@ func TestAutoResubscribe(t *testing.T) {
 
 	var received bool
 	for !received {
-		// Publish using SPublish only — Publish uses a different pub/sub namespace
-		// and would never reach an SSubscribe listener
 		err = client.SPublish(context.Background(), channelName, "after-migration").Err()
 		if err != nil {
 			t.Logf("SPublish failed (will retry): %v", err)
+			client.ReloadState(context.Background())
 		}
 
 		select {
