@@ -159,3 +159,21 @@ func BenchmarkHashslot_Hashtag(b *testing.B) {
 		Hashslot(channel)
 	}
 }
+
+func TestRandomSlot_NotAlwaysZero(t *testing.T) {
+	// randomSlot should return values in [0, 16384), not always 0.
+	seen := make(map[int]bool)
+	for range 100 {
+		seen[randomSlot()] = true
+	}
+	if len(seen) < 2 {
+		t.Errorf("randomSlot returned only %d distinct values in 100 calls, expected variation", len(seen))
+	}
+}
+
+func TestHashslot_EmptyChannel_ValidRange(t *testing.T) {
+	slot := Hashslot("")
+	if slot < 0 || slot >= 16384 {
+		t.Errorf("Hashslot(\"\") = %d, want [0, 16384)", slot)
+	}
+}
