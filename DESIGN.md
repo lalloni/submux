@@ -44,7 +44,7 @@ The core optimization strategy is **Hashslot-Based Connection Reuse**:
 2.  **Locate Connection**: Check if an active PubSub connection exists for this hashslot (or the node owning it).
 3.  **Reuse or Create**:
     *   *Exists*: Reuse the connection. If the channel is already subscribed to by another caller, just add the callback. If not, send `SUBSCRIBE` command.
-    *   *Missing*: Create a new `*redis.PubSub` connection to the target node (preferring replicas if configured).
+    *   *Missing*: Create a new `*redis.PubSub` connection to the target node using a direct `redis.Client` (bypassing cluster slot routing to avoid stale slot maps after migrations). The node is selected based on topology state, preferring replicas if configured.
 
 ### 2.3 Single Event Loop Architecture
 
@@ -163,7 +163,6 @@ For complete configuration options with defaults and descriptions, see the [Avai
 
 *   **`WithAutoResubscribe(bool)`**: Enables transparent failover during hashslot migrations. When enabled, SubMux automatically detects MOVED errors and resubscribes to the correct node without user intervention.
 *   **`WithNodePreference(NodePreference)`**: Controls connection distribution for load balancing. `BalancedAll` (default) distributes across all nodes; `PreferMasters` concentrates load on masters; `PreferReplicas` offloads read operations to replicas.
-*   **`WithMinConnectionsPerNode(int)`**: Affects connection reuse efficiency. Higher values improve concurrency for high subscription counts but increase Redis server load.
 *   **`WithCallbackWorkers(int)` / `WithCallbackQueueSize(int)`**: Controls callback concurrency and backpressure. Workers determine parallelism; queue size determines burst capacity. See Section 6.4 for worker pool architecture.
 
 ---

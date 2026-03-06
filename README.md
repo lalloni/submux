@@ -129,7 +129,6 @@ sm, err := submux.New(rdb,
 	submux.WithTopologyPollInterval(2 * time.Second),    // Topology refresh rate
 	submux.WithMigrationTimeout(30 * time.Second),       // Max time for migration resubscription
 	submux.WithMigrationStallCheck(2 * time.Second),     // Stall detection interval
-	submux.WithMinConnectionsPerNode(2),                 // Connection pool size per node
 	submux.WithLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil))), // Custom logger
 	submux.WithMeterProvider(meterProvider),             // OpenTelemetry metrics (optional)
 )
@@ -144,7 +143,6 @@ sm, err := submux.New(rdb,
 | `WithTopologyPollInterval(duration)` | `1s` | How often to poll cluster topology (min: 100ms) |
 | `WithMigrationTimeout(duration)` | `30s` | Max time to wait for migration resubscription (min: 1s) |
 | `WithMigrationStallCheck(duration)` | `2s` | How often to check for stalled migrations (min: 100ms) |
-| `WithMinConnectionsPerNode(int)` | `1` | Minimum connection pool size per node |
 | `WithCallbackWorkers(int)` | `runtime.NumCPU() * 2` | Number of worker goroutines for callback execution |
 | `WithCallbackQueueSize(int)` | `10000` | Maximum pending callbacks in worker pool queue |
 | `WithLogger(*slog.Logger)` | `slog.Default()` | Custom structured logger |
@@ -505,7 +503,6 @@ func main() {
 		submux.WithTopologyPollInterval(2*time.Second),   // Poll topology every 2s
 		submux.WithMigrationTimeout(30*time.Second),      // 30s timeout for migrations
 		submux.WithMigrationStallCheck(2*time.Second),    // Check for stalls every 2s
-		submux.WithMinConnectionsPerNode(2),              // 2 connections per node minimum
 		submux.WithLogger(logger),                        // Structured logging
 		submux.WithMeterProvider(meterProvider),          // OpenTelemetry metrics
 	)
@@ -612,9 +609,12 @@ sm, _ := submux.New(rdb,
 - `submux.topology.refresh_latency` - Topology refresh time (milliseconds)
 - `submux.workerpool.queue_wait` - Queue wait time before callback execution (milliseconds)
 
-**2 Observable Gauges:**
+**5 Observable Gauges:**
 - `submux.workerpool.queue_depth` - Current tasks in worker pool queue
 - `submux.workerpool.queue_capacity` - Maximum worker pool queue capacity
+- `submux.connections.active` - Active Redis PubSub connections
+- `submux.subscriptions.redis` - Active Redis-level subscriptions
+- `submux.subscriptions.active` - Active SubMux subscription handles
 
 ### Performance Characteristics
 
@@ -689,11 +689,11 @@ go build -tags nometrics -o myapp
 
 **Diagnostics:**
 - Use `pprof` to profile goroutines: `go tool pprof http://localhost:6060/debug/pprof/goroutine`
-- Check for unclosed subscriptions: Ensure `sub.Close()` is called
+- Check for unclosed subscriptions: Ensure `sub.Unsubscribe(ctx)` is called
 - Check metrics: Compare active subscriptions count with expected
 
 **Solutions:**
-- Always defer `sub.Close()` after creating subscriptions
+- Always defer `sub.Unsubscribe(ctx)` after creating subscriptions
 - Call `sm.Close()` when shutting down to clean up all resources
 - Use context cancellation to stop long-running callbacks
 

@@ -5,6 +5,8 @@ All notable changes to the submux project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **Direct client for node connections**: `createPubSubToNode` now creates a direct `redis.Client` to the target node address instead of routing through the cluster client's slot map. This prevents resubscription failures after hashslot migrations when the cluster client's internal slot map is stale, which caused MOVED errors, event loop failures, and permanently failed subscriptions.
+- **Integration test SSubscribe/SPublish correctness**: Removed incorrect `Publish` fallbacks in integration tests that silently sent messages to the wrong pub/sub namespace (PUBLISH vs SPUBLISH). Removed unnecessary `time.Sleep` after `ReloadState` calls. These fixes eliminate false test passes and improve test reliability.
 - **Topology resubscribe context leak**: `defer cancel()` inside nested loops in `resubscribeOnNewNode` caused context timers to accumulate until function return. Replaced with explicit `cancel()` at end of each iteration and before `continue` to release resources promptly.
 - **Event loop no longer treats context cancellation as connection failure**: When `sendRedisCommand` returned `context.Canceled` or `context.DeadlineExceeded` (e.g., from an unsubscribe with a tight deadline), the event loop incorrectly marked the entire PubSub connection as failed and exited, killing all subscriptions sharing that connection. Context errors are now treated as caller-initiated and do not trigger connection failure handling.
 - **Partial subscribe cleanup now uses fresh context**: When subscribing to multiple channels fails partway through (e.g., due to context deadline), the cleanup `unsubscribeSubscription` call previously used the same expired `ctx`. UNSUBSCRIBE commands would fail, leaving orphaned server-side subscriptions. Cleanup now uses `context.Background()` to guarantee UNSUBSCRIBE commands are sent.
@@ -60,6 +62,7 @@ All notable changes to the submux project will be documented in this file.
   - **Impact**: Tests now provide better diagnostics (show exact precondition failure), execute faster (skip unnecessary retries), and have clearer intent
 
 ### Removed
+- **`WithMinConnectionsPerNode` configuration option**: Removed unused `minConnectionsPerNode` config field and its `WithMinConnectionsPerNode()` option function. The option was never wired into the connection pool logic.
 - **Deprecated Test Utilities**: Removed `retryWithBackoff()` and `waitForCondition()` from `integration/shared_cluster_test.go`
   - These generic retry helpers have been completely replaced by explicit precondition checks
   - All tests now use explicit state validation instead of implicit retries

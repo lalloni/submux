@@ -232,8 +232,9 @@ go test -bench=. -benchmem
 
 - `getSharedCluster(t)` - Returns shared cluster for tests (avoids per-test cluster startup)
 - `uniqueChannel(base)` - Returns unique channel name to prevent test interference
-- `retryWithBackoff(t, attempts, delay, fn)` - Retry with exponential backoff for transient failures
-- `waitForCondition(t, timeout, poll, fn, desc)` - Poll until condition is true or timeout
+- `waitForClusterHealthy(t, cluster)` - Validates cluster_state:ok, all slots assigned, no failed slots
+- `waitForReplicasReady(t, cluster, count)` - Ensures all masters have required number of replicas
+- `WaitForSlotConvergence(t, cluster)` - Ensures all nodes agree on slot ownership after migrations
 
 **For detailed test infrastructure:** See [DESIGN.md Section 5: Testing Strategy](DESIGN.md#5-testing-strategy)
 
@@ -404,7 +405,7 @@ Use these with `errors.Is()` for error checking.
 
 **For complete metrics documentation:** See [DESIGN.md Section 6.5: Observability](DESIGN.md#65-observability)
 
-submux provides 21 production metrics (11 counters, 4 histograms, 2 gauges planned):
+submux provides 23 production metrics (13 counters, 5 histograms, 5 observable gauges):
 - Message throughput and latency
 - Connection creation and failures
 - Migration events and duration
