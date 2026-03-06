@@ -133,9 +133,13 @@ func TestAutoResubscribe(t *testing.T) {
 
 	channelName := uniqueChannel("auto-resub-test")
 	messages := make(chan *submux.Message, 10)
+	signals := make(chan *submux.Message, 10)
 
 	_, err = subMux.SSubscribeSync(context.Background(), []string{channelName}, func(ctx context.Context, msg *submux.Message) {
-		if msg.Type == submux.MessageTypeMessage || msg.Type == submux.MessageTypeSMessage {
+		switch msg.Type {
+		case submux.MessageTypeSignal:
+			signals <- msg
+		case submux.MessageTypeMessage, submux.MessageTypeSMessage:
 			messages <- msg
 		}
 	})
@@ -196,11 +200,26 @@ func TestAutoResubscribe(t *testing.T) {
 		t.Fatalf("Slot convergence timeout: %v", err)
 	}
 
+	// Wait for SubMux to detect the migration via topology polling.
+	// The topology poll runs every 100ms but can be delayed if ClusterSlots()
+	// hangs on a slow node (up to 3s ReadTimeout + fallback). Waiting for the
+	// EventMigration signal confirms detection happened and resubscription started.
+	migrationCtx, migrationCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer migrationCancel()
+
+	select {
+	case sig := <-signals:
+		t.Logf("Received signal: %v", sig.Signal.EventType)
+	case <-migrationCtx.Done():
+		t.Fatal("Timeout waiting for SubMux to detect migration (no EventMigration signal)")
+	}
+
 	// Reload state to ensure client knows about new topology for correct routing
 	client.ReloadState(context.Background())
 
-	// Loop publish until received or timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Publish repeatedly until a message is received, confirming resubscription completed.
+	// The resubscription is in progress (started after migration detection above).
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	ticker := time.NewTicker(200 * time.Millisecond)

@@ -641,3 +641,30 @@ func TestUnsubscribe_WaitsForResponse(t *testing.T) {
 		t.Errorf("expected simulated error, got %v", err)
 	}
 }
+
+// TestUnsubscribe_ContextBackground_NoHangWhenEventLoopUnresponsive verifies that
+// when unsubscribeSubscription is called with context.Background() (e.g. from
+// subscribe cleanup) and the event loop never responds (e.g. connection failure
+// after command queued), we timeout instead of hanging forever.
+func TestUnsubscribe_ContextBackground_NoHangWhenEventLoopUnresponsive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping 5s timeout test in short mode")
+	}
+	f := setupUnsubscribeTest(t)
+
+	// Don't consume from cmdCh - simulate event loop dead after command queued.
+	// With context.Background(), ctx.Done() never fires. Without the fix, we'd hang forever.
+	done := make(chan error, 1)
+	go func() {
+		done <- f.sub.Unsubscribe(context.Background())
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("expected context.DeadlineExceeded when event loop unresponsive, got %v", err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("Unsubscribe hung for 6s - should timeout when event loop is unresponsive")
+	}
+}

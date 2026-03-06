@@ -138,8 +138,12 @@ func (s *subscription) setState(newState subscriptionState, err error) {
 	oldState := s.state
 	s.state = newState
 
-	// Signal confirmation channel for the primary waiter
-	if s.confirmCh != nil {
+	// Signal confirmation channel only when leaving the Pending state.
+	// confirmCh is consumed by waitForConfirmation, which waits for the
+	// subscription to leave Pending (via Active, Failed, or Closed).
+	// Sending on other transitions would leave stale values that cause
+	// false positives during resubscription.
+	if s.confirmCh != nil && oldState == subStatePending {
 		select {
 		case s.confirmCh <- err:
 		default:
@@ -152,6 +156,27 @@ func (s *subscription) setState(newState subscriptionState, err error) {
 		s.doneChClosed = true
 		close(s.doneCh)
 	}
+}
+
+// resetConfirmation prepares the subscription for reuse (e.g. during
+// resubscription after a migration). It drains any stale value from confirmCh
+// and recreates doneCh so that new waiters can block on it.
+func (s *subscription) resetConfirmation() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Drain stale confirmCh value left by a previous subscribe cycle.
+	if s.confirmCh != nil {
+		select {
+		case <-s.confirmCh:
+		default:
+		}
+	}
+
+	// Reset doneCh for new multi-waiter broadcasts.
+	s.doneCh = make(chan struct{})
+	s.doneChClosed = false
+	s.confirmErr = nil
 }
 
 // getState returns the current subscription state.

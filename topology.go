@@ -279,15 +279,17 @@ func (tm *topologyMonitor) triggerRefresh(redirectAddr string, isMoved bool) {
 		tm.config.logger.Info("submux: ASK redirect detected, triggering topology refresh", "redirect_addr", redirectAddr)
 	}
 
+	// Add(1) before checking done to avoid race with stop():
+	// if we checked done first, stop() could run between the check and Add(1),
+	// causing Wait() to return before our Add(1), leading to WaitGroup misuse.
+	tm.wg.Add(1)
 	select {
 	case <-tm.done:
-		return // Already stopping
+		tm.wg.Done()
+		return
 	default:
 	}
 
-	// Perform refresh asynchronously to avoid blocking the caller.
-	// Track in wg so stop() waits for the refresh to complete.
-	tm.wg.Add(1)
 	go func() {
 		defer tm.wg.Done()
 		if err := tm.refreshTopology(); err != nil {
@@ -466,15 +468,16 @@ func (tm *topologyMonitor) handleMigration(migration hashslotMigration) {
 
 	// If auto-resubscribe is enabled, recreate subscriptions on new node
 	// Run in goroutine with progress monitoring to detect timeouts/stalls.
-	// Track in wg so stop() waits for the migration to complete.
 	if tm.config.autoResubscribe {
+		// Add(1) before checking done to avoid race with stop() (same as triggerRefresh).
+		tm.wg.Add(1)
 		select {
 		case <-tm.done:
+			tm.wg.Done()
 			return
 		default:
 		}
 
-		tm.wg.Add(1)
 		go func() {
 			defer tm.wg.Done()
 			tm.resubscribeOnNewNodeWithMonitoring(affectedSubs, migration)
@@ -591,10 +594,15 @@ func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscripti
 
 	totalSubs := int64(len(subs))
 
-	// Create a single migration context with the configured timeout.
-	// All per-command contexts derive from this, so the overall migration
-	// timeout is enforced structurally rather than being advisory-only.
-	migrationCtx, migrationCancel := context.WithTimeout(context.Background(), migrationTimeout)
+	// Create a migration context with a deadline extended beyond migrationTimeout.
+	// The monitoring goroutine checks time.Since(startTime) > migrationTimeout to
+	// detect timeout, but per-command contexts derive from this context. Without
+	// extra headroom the context expires at the same instant the monitoring goroutine
+	// would detect the timeout, creating a race where doneCh closes before the
+	// monitoring ticker fires. Adding 2×stallCheckInterval ensures at least one
+	// monitoring tick can observe the timeout and send the signal.
+	ctxDeadline := migrationTimeout + 2*stallCheckInterval
+	migrationCtx, migrationCancel := context.WithTimeout(context.Background(), ctxDeadline)
 	defer migrationCancel()
 
 	// Progress monitoring goroutine
@@ -602,21 +610,45 @@ func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscripti
 		ticker := time.NewTicker(stallCheckInterval)
 		defer ticker.Stop()
 
+		signalSent := false
+
 		for {
 			select {
 			case <-doneCh:
+				// Resubscription goroutines finished. Perform a final signal check
+				// to handle cases where all goroutines completed (possibly with errors)
+				// before the ticker had a chance to fire.
+				if !signalSent {
+					anyFailed := false
+					for _, sub := range subs {
+						if sub.getState() != subStateActive {
+							anyFailed = true
+						}
+					}
+					if anyFailed {
+						elapsed := time.Since(startTime)
+						if elapsed > migrationTimeout {
+							tm.sendMigrationTimeoutSignal(subs, migration, migrationTimeout)
+						} else if time.Since(lastProgressTime) > stallCheckInterval {
+							tm.sendMigrationStalledSignal(subs, migration, time.Since(lastProgressTime))
+						}
+					}
+				}
 				return
+
 			case <-ticker.C:
 				currentCount := processedCount.Load()
 
-				// Check if completed
+				// If all subs are processed, stop monitoring but stay alive
+				// for the doneCh final check (which verifies actual success).
 				if currentCount >= totalSubs {
-					return
+					continue
 				}
 
 				// Check for timeout
 				if time.Since(startTime) > migrationTimeout {
 					tm.sendMigrationTimeoutSignal(subs, migration, migrationTimeout)
+					signalSent = true
 					return
 				}
 
@@ -627,6 +659,7 @@ func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscripti
 				} else if time.Since(lastProgressTime) > stallCheckInterval {
 					// No progress in last interval - it's a stall
 					tm.sendMigrationStalledSignal(subs, migration, time.Since(lastProgressTime))
+					signalSent = true
 					return
 				}
 			}
@@ -661,6 +694,11 @@ func (tm *topologyMonitor) resubscribeOnNewNode(ctx context.Context, subs []*sub
 		channelsByType[sub.subType][sub.channel] = append(channelsByType[sub.subType][sub.channel], sub)
 	}
 
+	// Clear the old hashslot-to-PubSub cache entry. After migration the cached
+	// PubSub points at the source node, which would respond with MOVED. Forcing
+	// a fresh lookup ensures getPubSubForHashslot connects to the new owner.
+	tm.subMux.pool.invalidateHashslot(migration.hashslot)
+
 	// For each subscription type and channel, recreate subscriptions
 	for subType, channels := range channelsByType {
 		for channel, channelSubs := range channels {
@@ -685,6 +723,8 @@ func (tm *topologyMonitor) resubscribeOnNewNode(ctx context.Context, subs []*sub
 			if err != nil {
 				if ctx.Err() != nil {
 					// Migration context expired — skip remaining
+					tm.config.logger.Debug("submux: resubscription skipping: migration context expired",
+						"hashslot", migration.hashslot, "error", err)
 					processedCount.Add(int64(len(channelSubs)))
 					return
 				}
@@ -717,7 +757,9 @@ func (tm *topologyMonitor) resubscribeOnNewNode(ctx context.Context, subs []*sub
 				isFirstOnNewPubSub := len(existingSubs) == 1
 
 				if isFirstOnNewPubSub {
-					// Mark as pending
+					// Prepare for resubscription: drain any stale confirmation
+					// from a previous subscribe cycle and mark as pending.
+					sub.resetConfirmation()
 					sub.setState(subStatePending, nil)
 					meta.addPendingSubscription(sub)
 
