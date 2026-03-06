@@ -3,6 +3,7 @@ package submux
 import (
 	"context"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -82,7 +83,9 @@ func executeCallback(ctx context.Context, logger *slog.Logger, recorder metricsR
 
 		// Recover from panics
 		if r := recover(); r != nil {
-			logger.Error("submux: panic in callback", "error", r)
+			if logger != nil {
+				logger.Error("submux: panic in callback", "error", r, "stack", string(debug.Stack()))
+			}
 			recorder.recordCallbackPanic(subType)
 		}
 	}()

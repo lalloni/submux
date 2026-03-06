@@ -22,6 +22,9 @@ func runEventLoop(meta *pubSubMetadata) {
 	for {
 		select {
 		case cmd := <-meta.cmdCh:
+			if cmd == nil {
+				continue
+			}
 			// Send command to Redis
 			err := sendRedisCommand(meta, cmd)
 			if err != nil {

@@ -510,3 +510,22 @@ func TestInvokeCallback_FallbackGoroutineTracked(t *testing.T) {
 		t.Error("fallback goroutine should have completed after wg.Wait()")
 	}
 }
+
+func TestExecuteCallback_NilLogger_PanicRecovery(t *testing.T) {
+	// Verify that a nil logger does not cause a secondary panic
+	// when the callback panics.
+	recorder := &noopMetrics{}
+	msg := &Message{
+		Type:             MessageTypeMessage,
+		Channel:          "test",
+		Payload:          "data",
+		SubscriptionType: subTypeSubscribe,
+	}
+
+	panickingCallback := func(ctx context.Context, msg *Message) {
+		panic("intentional test panic")
+	}
+
+	// This must not panic (the nil logger should be handled gracefully)
+	executeCallback(context.Background(), nil, recorder, panickingCallback, msg)
+}

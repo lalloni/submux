@@ -790,8 +790,9 @@ func TestRunEventLoop_CmdChannelClosed(t *testing.T) {
 
 	go runEventLoop(meta)
 
-	// Close command channel
-	close(meta.cmdCh)
+	// Signal done to exit the event loop (cmdCh is no longer closed to
+	// avoid send-to-closed-channel panics in sendCommand)
+	close(meta.done)
 
 	done := make(chan struct{})
 	go func() {
@@ -803,7 +804,7 @@ func TestRunEventLoop_CmdChannelClosed(t *testing.T) {
 	case <-done:
 		// Success
 	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for event loop to exit after cmdCh closed")
+		t.Fatal("timeout waiting for event loop to exit after done closed")
 	}
 }
 
