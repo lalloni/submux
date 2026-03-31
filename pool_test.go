@@ -1786,3 +1786,163 @@ func TestAddHashslotPubSub_NoDuplicates(t *testing.T) {
 		t.Errorf("hashslotPubSubs has %d entries, want 1 (dedup failed)", count)
 	}
 }
+
+func TestPubSubPool_FailedConnectionCleanup_RemovesFromAllMaps(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	pubsub := &redis.PubSub{}
+	meta := &pubSubMetadata{
+		nodeAddr:             "node1:7000",
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateFailed,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
+	}
+
+	// Set up pool state
+	pool.mu.Lock()
+	pool.nodePubSubs["node1:7000"] = []*redis.PubSub{pubsub}
+	pool.hashslotPubSubs[100] = []*redis.PubSub{pubsub}
+	pool.hashslotPubSubs[200] = []*redis.PubSub{pubsub}
+	pool.pubSubMetadata[pubsub] = meta
+	pool.mu.Unlock()
+
+	// Simulate cleanup (what onEventLoopExit should do)
+	meta.close()
+	pool.removePubSub(pubsub)
+
+	// Verify all maps are clean
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+
+	if _, ok := pool.pubSubMetadata[pubsub]; ok {
+		t.Error("pubsub should be removed from pubSubMetadata")
+	}
+	if _, ok := pool.nodePubSubs["node1:7000"]; ok {
+		t.Error("node entry should be removed from nodePubSubs")
+	}
+	if _, ok := pool.hashslotPubSubs[100]; ok {
+		t.Error("hashslot 100 should be removed")
+	}
+	if _, ok := pool.hashslotPubSubs[200]; ok {
+		t.Error("hashslot 200 should be removed")
+	}
+}
+
+func TestCleanupFailedConnection_RemovesZombieSubscriptions_AutoResubscribeOff(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.autoResubscribe = false
+
+	sm := &SubMux{
+		config:        cfg,
+		subscriptions: make(map[string][]*subscription),
+	}
+
+	sub1 := &subscription{channel: "ch1", state: subStateFailed}
+	sub2 := &subscription{channel: "ch2", state: subStateFailed}
+	sm.subscriptions["ch1"] = []*subscription{sub1}
+	sm.subscriptions["ch2"] = []*subscription{sub2}
+
+	meta := &pubSubMetadata{
+		nodeAddr:             "node1:7000",
+		subscriptions:        map[string][]*subscription{"ch1": {sub1}, "ch2": {sub2}},
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateFailed,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
+	}
+
+	// Simulate cleanup: remove zombie subs from sm.subscriptions
+	zombieSubs := meta.getAllSubscriptions()
+	sm.mu.Lock()
+	for _, s := range zombieSubs {
+		sm.removeSubscriptionFromMapLocked(s.channel, s)
+	}
+	sm.mu.Unlock()
+
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	if len(sm.subscriptions) != 0 {
+		t.Errorf("sm.subscriptions should be empty after cleanup, got %d entries", len(sm.subscriptions))
+	}
+}
+
+func TestCleanupFailedConnection_PreservesSubscriptions_AutoResubscribeOn(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.autoResubscribe = true
+
+	sm := &SubMux{
+		config:        cfg,
+		subscriptions: make(map[string][]*subscription),
+	}
+
+	sub := &subscription{channel: "ch1", state: subStateFailed}
+	sm.subscriptions["ch1"] = []*subscription{sub}
+
+	// With autoResubscribe ON, cleanup should NOT remove from sm.subscriptions
+	// (topology monitor handles resubscription)
+	sm.mu.RLock()
+	if len(sm.subscriptions) != 1 {
+		t.Errorf("sm.subscriptions should still have 1 entry, got %d", len(sm.subscriptions))
+	}
+	sm.mu.RUnlock()
+}
+
+func TestCleanupAndCloseAll_Concurrent_NoPanic(t *testing.T) {
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	// Use real PubSub objects (from a throwaway client) to avoid nil-channel panics
+	client := redis.NewClient(&redis.Options{Addr: "invalid:9999"})
+	defer client.Close()
+
+	var allPubSubs []*redis.PubSub
+	for range 50 {
+		pubsub := client.Subscribe(context.Background())
+		allPubSubs = append(allPubSubs, pubsub)
+		meta := &pubSubMetadata{
+			nodeAddr:             "node1:7000",
+			subscriptions:        make(map[string][]*subscription),
+			pendingSubscriptions: make(map[string]*subscription),
+			state:                connStateFailed,
+			cmdCh:                make(chan *command, 10),
+			done:                 make(chan struct{}),
+			loopDone:             make(chan struct{}),
+		}
+
+		pool.mu.Lock()
+		pool.nodePubSubs["node1:7000"] = append(pool.nodePubSubs["node1:7000"], pubsub)
+		pool.hashslotPubSubs[100] = append(pool.hashslotPubSubs[100], pubsub)
+		pool.pubSubMetadata[pubsub] = meta
+		pool.mu.Unlock()
+	}
+
+	// Run closeAll and removePubSub concurrently — must not panic
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		pool.closeAll()
+	}()
+
+	go func() {
+		defer wg.Done()
+		for _, ps := range allPubSubs {
+			pool.removePubSub(ps)
+		}
+	}()
+
+	wg.Wait()
+
+	// Verify pool is clean
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+	if len(pool.pubSubMetadata) != 0 {
+		t.Errorf("expected 0 metadata entries, got %d", len(pool.pubSubMetadata))
+	}
+}

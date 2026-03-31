@@ -128,6 +128,11 @@ type pubSubMetadata struct {
 	// The addr parameter is the redirect target address, isMoved indicates MOVED vs ASK.
 	onRedirectDetected func(addr string, isMoved bool)
 
+	// onEventLoopExit is called after the event loop goroutine has fully exited
+	// (after wg.Done()). Used to clean up failed connections: close directClient,
+	// close PubSub, remove from pool maps, and clean zombie subscriptions.
+	onEventLoopExit func()
+
 	// mu protects subscriptions, pendingSubscriptions, and state.
 	mu sync.RWMutex
 }
@@ -287,6 +292,13 @@ func (m *pubSubMetadata) close() error {
 	}
 
 	return nil
+}
+
+// callOnEventLoopExit invokes the onEventLoopExit callback if set.
+func (m *pubSubMetadata) callOnEventLoopExit() {
+	if m.onEventLoopExit != nil {
+		m.onEventLoopExit()
+	}
 }
 
 // sendCommand sends a command to the command sender goroutine.
@@ -677,6 +689,36 @@ func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*
 	// Set the redirect callback to trigger topology refresh on MOVED/ASK errors
 	// (tm is guaranteed non-nil at this point due to earlier check)
 	meta.onRedirectDetected = tm.triggerRefresh
+
+	// Set the event loop exit callback to clean up failed connections.
+	// Runs after the event loop goroutine has fully exited (after wg.Done()).
+	meta.onEventLoopExit = func() {
+		// Only clean up on failure — clean shutdown is handled by closeAll()
+		if meta.getState() != connStateFailed {
+			return
+		}
+
+		meta.logger.Debug("submux: cleaning up failed connection", "node", meta.nodeAddr)
+
+		// Close the metadata (sets connStateClosed, closes done channel,
+		// wg.Wait() returns immediately since wg.Done() already ran, closes directClient).
+		meta.close()
+		pubsub.Close()
+		p.removePubSub(pubsub)
+
+		// Clean zombie subscriptions from sm.subscriptions when autoResubscribe is off.
+		// When autoResubscribe is ON, the topology monitor handles moving subscriptions
+		// to new connections, so they must remain in sm.subscriptions.
+		if sm != nil && !p.config.autoResubscribe {
+			// No locks are held here — safe to acquire sm.mu per lock ordering.
+			zombieSubs := meta.getAllSubscriptions()
+			sm.mu.Lock()
+			for _, sub := range zombieSubs {
+				sm.removeSubscriptionFromMapLocked(sub.channel, sub)
+			}
+			sm.mu.Unlock()
+		}
+	}
 
 	// Register metadata
 	p.mu.Lock()

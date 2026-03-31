@@ -2,11 +2,15 @@ package submux
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // TestWorkerPool_GoroutineLeaks verifies that the worker pool doesn't leak goroutines.
@@ -224,5 +228,80 @@ func TestHighThroughput_NoGoroutineExplosion(t *testing.T) {
 
 	if count.Load() != int64(numTasks) {
 		t.Errorf("not all tasks completed: %d/%d", count.Load(), numTasks)
+	}
+}
+
+func TestFailedConnection_NoGoroutineLeak(t *testing.T) {
+	// Baseline
+	runtime.GC()
+	time.Sleep(50 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	cfg := defaultConfig()
+	pool := newPubSubPool(nil, cfg)
+
+	// Create and "fail" several connections
+	for i := range 10 {
+		client := redis.NewClient(&redis.Options{Addr: "invalid:9999"})
+		pubsub := client.Subscribe(context.Background())
+
+		meta := &pubSubMetadata{
+			pubsub:               pubsub,
+			directClient:         client,
+			subscriptions:        make(map[string][]*subscription),
+			pendingSubscriptions: make(map[string]*subscription),
+			state:                connStateActive,
+			cmdCh:                make(chan *command, 10),
+			done:                 make(chan struct{}),
+			loopDone:             make(chan struct{}),
+			logger:               slog.Default(),
+			recorder:             &noopMetrics{},
+			nodeAddr:             "invalid:9999",
+		}
+
+		// Set cleanup callback (simulating what createPubSubToNode does)
+		meta.onEventLoopExit = func() {
+			if meta.getState() != connStateFailed {
+				return
+			}
+			meta.close()
+			pubsub.Close()
+			pool.removePubSub(pubsub)
+		}
+
+		pool.mu.Lock()
+		pool.nodePubSubs["invalid:9999"] = append(pool.nodePubSubs["invalid:9999"], pubsub)
+		pool.pubSubMetadata[pubsub] = meta
+		pool.mu.Unlock()
+
+		// Start event loop and trigger failure
+		meta.wg.Add(1)
+		go runEventLoop(meta)
+
+		meta.cmdCh <- &command{
+			cmd:      cmdSubscribe,
+			args:     []any{fmt.Sprintf("ch-%d", i)},
+			response: make(chan error, 1),
+		}
+
+		// Wait for event loop to exit
+		<-meta.loopDone
+	}
+
+	// Allow cleanup to finish
+	runtime.GC()
+	time.Sleep(200 * time.Millisecond)
+
+	final := runtime.NumGoroutine()
+	margin := 5
+	if final > baseline+margin {
+		t.Errorf("goroutine leak: baseline=%d, final=%d (increase of %d)", baseline, final, final-baseline)
+	}
+
+	// Verify pool is clean
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+	if len(pool.pubSubMetadata) != 0 {
+		t.Errorf("expected 0 metadata entries, got %d", len(pool.pubSubMetadata))
 	}
 }

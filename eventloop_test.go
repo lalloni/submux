@@ -1329,3 +1329,121 @@ func TestSendCommand_RejectsAfterLoopDone(t *testing.T) {
 		t.Errorf("expected ErrEventLoopStopped, got %v", err)
 	}
 }
+
+func TestRunEventLoop_CallsOnEventLoopExit_OnFailure(t *testing.T) {
+	client := redis.NewClient(&redis.Options{Addr: "invalid:9999"})
+	defer client.Close()
+	pubsub := client.Subscribe(context.Background())
+	defer pubsub.Close()
+
+	called := make(chan struct{})
+	meta := &pubSubMetadata{
+		pubsub:               pubsub,
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
+		logger:               slog.Default(),
+		recorder:             &noopMetrics{},
+		nodeAddr:             "test:7000",
+		onEventLoopExit: func() {
+			close(called)
+		},
+	}
+
+	meta.wg.Add(1)
+	go runEventLoop(meta)
+
+	// Trigger failure via invalid connection
+	meta.cmdCh <- &command{
+		cmd:      cmdSubscribe,
+		args:     []any{"ch"},
+		response: make(chan error, 1),
+	}
+
+	select {
+	case <-called:
+		// Success
+	case <-time.After(5 * time.Second):
+		t.Fatal("onEventLoopExit was not called after failure")
+	}
+}
+
+func TestRunEventLoop_CallsOnEventLoopExit_OnCleanShutdown(t *testing.T) {
+	client := redis.NewClient(&redis.Options{Addr: "invalid:9999"})
+	defer client.Close()
+	pubsub := client.Subscribe(context.Background())
+	defer pubsub.Close()
+
+	var calledState connectionState
+	called := make(chan struct{})
+	meta := &pubSubMetadata{
+		pubsub:               pubsub,
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
+		logger:               slog.Default(),
+		recorder:             &noopMetrics{},
+		nodeAddr:             "test:7000",
+	}
+
+	meta.onEventLoopExit = func() {
+		calledState = meta.getState()
+		close(called)
+	}
+
+	meta.wg.Add(1)
+	go runEventLoop(meta)
+
+	// Clean shutdown
+	meta.close()
+
+	select {
+	case <-called:
+		// On clean shutdown, state should be connStateClosed (set by meta.close())
+		if calledState != connStateClosed {
+			t.Errorf("state during callback = %v, want connStateClosed", calledState)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("onEventLoopExit was not called after clean shutdown")
+	}
+}
+
+func TestRunEventLoop_NilOnEventLoopExit_NoPanic(t *testing.T) {
+	client := redis.NewClient(&redis.Options{Addr: "invalid:9999"})
+	defer client.Close()
+	pubsub := client.Subscribe(context.Background())
+	defer pubsub.Close()
+
+	meta := &pubSubMetadata{
+		pubsub:               pubsub,
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
+		logger:               slog.Default(),
+		recorder:             &noopMetrics{},
+		nodeAddr:             "test:7000",
+		onEventLoopExit:      nil,
+	}
+
+	meta.wg.Add(1)
+	go runEventLoop(meta)
+	close(meta.done)
+
+	done := make(chan struct{})
+	go func() { meta.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		// No panic — success
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for event loop to exit")
+	}
+}

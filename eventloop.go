@@ -13,9 +13,11 @@ import (
 // It handles both sending commands to Redis and processing incoming messages.
 func runEventLoop(meta *pubSubMetadata) {
 	// Defer ordering matters: defers execute LIFO.
-	// 1. wg.Done() runs last — signals meta.close() waiters
-	// 2. close(loopDone) runs second — unblocks sendCommand/unsubscribe waiters
-	// 3. drainCmdCh runs first — sends errors to commands already buffered in cmdCh
+	// 1. callOnEventLoopExit() runs last — cleans up failed connections
+	// 2. wg.Done() runs fourth — signals meta.close() waiters
+	// 3. close(loopDone) runs third — unblocks sendCommand/unsubscribe waiters
+	// 4. drainCmdCh runs first — sends errors to commands already buffered in cmdCh
+	defer meta.callOnEventLoopExit()
 	defer meta.wg.Done()
 	defer close(meta.loopDone)
 	defer drainCmdCh(meta)
