@@ -84,7 +84,18 @@ func executeCallback(ctx context.Context, logger *slog.Logger, recorder metricsR
 		// Recover from panics
 		if r := recover(); r != nil {
 			if logger != nil {
-				logger.Error("submux: panic in callback", "error", r, "stack", string(debug.Stack()))
+				attrs := []any{
+					"error", r,
+					"subscription_type", subType,
+				}
+				if msg != nil {
+					attrs = append(attrs, "channel", msg.Channel)
+					if msg.Pattern != "" {
+						attrs = append(attrs, "pattern", msg.Pattern)
+					}
+				}
+				attrs = append(attrs, "stack", string(debug.Stack()))
+				logger.Error("submux: panic in callback", attrs...)
 			}
 			recorder.recordCallbackPanic(subType)
 		}
