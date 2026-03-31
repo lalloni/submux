@@ -8,6 +8,13 @@ import (
 	"time"
 )
 
+// invokeCallbackOrdered enqueues a message for ordered delivery to the subscription's
+// callback. Messages for the same subscription are guaranteed to execute sequentially
+// in the order they were enqueued, while different subscriptions execute concurrently.
+func invokeCallbackOrdered(ctx context.Context, logger *slog.Logger, recorder metricsRecorder, pool *WorkerPool, callbackWg *sync.WaitGroup, sub *subscription, msg *Message) {
+	sub.sequencer.enqueue(ctx, logger, recorder, pool, callbackWg, sub.callback, msg)
+}
+
 // invokeCallback safely invokes a callback function with panic recovery.
 // The callback is invoked asynchronously via the worker pool.
 // If pool is nil, falls back to spawning a new goroutine (for backwards compatibility).

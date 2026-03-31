@@ -528,7 +528,7 @@ func (tm *topologyMonitor) broadcastSignal(subs []*subscription, signal *SignalI
 			Timestamp:        timestamp,
 			SubscriptionType: sub.subType,
 		}
-		invokeCallback(lifecycleCtx, tm.config.logger, tm.config.recorder, workerPool, callbackWg, sub.callback, msg)
+		invokeCallbackOrdered(lifecycleCtx, tm.config.logger, tm.config.recorder, workerPool, callbackWg, sub, msg)
 	}
 }
 

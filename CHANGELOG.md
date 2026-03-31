@@ -4,6 +4,9 @@ All notable changes to the submux project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Per-subscription message ordering guarantee**: Introduced `callbackSequencer` that ensures callbacks for a given subscription execute sequentially in the order messages were received from Redis. This preserves the Redis Pub/Sub ordered delivery promise that was broken by concurrent worker pool execution. Different subscriptions still execute concurrently. Uses a drain-loop pattern to avoid re-submit deadlock risks.
+
 ### Improved
 - **Enhanced panic recovery logging in callbacks**: When a user-provided callback panics, the log entry now includes `subscription_type`, `channel`, and `pattern` (when non-empty) fields alongside the existing `error` and `stack` attributes. This provides immediate context about which callback panicked without parsing the stack trace.
 
