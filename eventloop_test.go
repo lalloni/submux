@@ -26,6 +26,7 @@ func newTestMetadata() *pubSubMetadata {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 		logger:               slog.Default(),
 		recorder:             &noopMetrics{},
 		nodeAddr:             "test:7000",
@@ -739,6 +740,7 @@ func TestRunEventLoop_DoneChannelClosed(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 		logger:               slog.Default(),
 		nodeAddr:             "test:7000",
 	}
@@ -782,6 +784,7 @@ func TestRunEventLoop_CmdChannelClosed(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 		logger:               slog.Default(),
 		nodeAddr:             "test:7000",
 	}
@@ -824,6 +827,7 @@ func TestRunEventLoop_CommandError_SetsFailedState(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 		logger:               slog.Default(),
 		nodeAddr:             "test:7000",
 	}
@@ -906,6 +910,7 @@ func TestRunEventLoop_CommandError_NilResponse(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 		logger:               slog.Default(),
 		nodeAddr:             "test:7000",
 	}
@@ -1170,6 +1175,7 @@ func TestSendCommand_AfterClose_NoPanic(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 100),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	meta.close()
@@ -1194,6 +1200,7 @@ func TestSendCommand_ConcurrentWithClose_NoPanic(t *testing.T) {
 			state:                connStateActive,
 			cmdCh:                make(chan *command, 1),
 			done:                 make(chan struct{}),
+			loopDone:             make(chan struct{}),
 		}
 
 		var wg sync.WaitGroup
@@ -1218,5 +1225,107 @@ func TestSendCommand_ConcurrentWithClose_NoPanic(t *testing.T) {
 			}()
 		}
 		wg.Wait()
+	}
+}
+
+func TestDrainCmdCh_SendsErrorsToAllPending(t *testing.T) {
+	meta := newTestMetadata()
+
+	// Queue 3 commands with response channels
+	cmds := make([]*command, 3)
+	for i := range cmds {
+		cmds[i] = &command{
+			ctx:      context.Background(),
+			cmd:      cmdSubscribe,
+			args:     []any{"test"},
+			response: make(chan error, 1),
+		}
+		meta.cmdCh <- cmds[i]
+	}
+
+	// Drain should send errors to all
+	drainCmdCh(meta)
+
+	for i, cmd := range cmds {
+		select {
+		case err := <-cmd.response:
+			if !errors.Is(err, ErrEventLoopStopped) {
+				t.Errorf("cmd[%d]: expected ErrEventLoopStopped, got %v", i, err)
+			}
+		default:
+			t.Errorf("cmd[%d]: no error on response channel", i)
+		}
+	}
+
+	// Channel should be empty now
+	select {
+	case <-meta.cmdCh:
+		t.Error("cmdCh should be empty after drain")
+	default:
+	}
+}
+
+func TestDrainCmdCh_SkipsNilCommands(t *testing.T) {
+	meta := newTestMetadata()
+
+	meta.cmdCh <- nil
+	cmd := &command{
+		ctx:      context.Background(),
+		cmd:      cmdSubscribe,
+		args:     []any{"test"},
+		response: make(chan error, 1),
+	}
+	meta.cmdCh <- cmd
+
+	drainCmdCh(meta)
+
+	select {
+	case err := <-cmd.response:
+		if !errors.Is(err, ErrEventLoopStopped) {
+			t.Errorf("expected ErrEventLoopStopped, got %v", err)
+		}
+	default:
+		t.Error("no error on response channel")
+	}
+}
+
+func TestDrainCmdCh_SkipsNilResponse(t *testing.T) {
+	meta := newTestMetadata()
+
+	// Command with no response channel — should not panic
+	meta.cmdCh <- &command{
+		ctx:  context.Background(),
+		cmd:  cmdSubscribe,
+		args: []any{"test"},
+	}
+
+	drainCmdCh(meta) // should not panic
+}
+
+func TestSendCommand_RejectsAfterLoopDone(t *testing.T) {
+	meta := newTestMetadata()
+
+	// Fill the cmdCh buffer so the send case can't be selected.
+	// This ensures the only ready case is <-loopDone.
+	for range cap(meta.cmdCh) {
+		meta.cmdCh <- &command{}
+	}
+
+	// Simulate event loop has already exited
+	close(meta.loopDone)
+
+	cmd := &command{
+		ctx:      context.Background(),
+		cmd:      cmdSubscribe,
+		args:     []any{"test"},
+		response: make(chan error, 1),
+	}
+
+	err := meta.sendCommand(context.Background(), cmd)
+	if err == nil {
+		t.Fatal("expected error from sendCommand after loopDone closed")
+	}
+	if !errors.Is(err, ErrEventLoopStopped) {
+		t.Errorf("expected ErrEventLoopStopped, got %v", err)
 	}
 }

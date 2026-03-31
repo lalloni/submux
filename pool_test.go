@@ -48,6 +48,7 @@ func TestPubSubMetadata_SubscriptionManagement(t *testing.T) {
 		state:         connStateActive,
 		cmdCh:         make(chan *command, 100),
 		done:          make(chan struct{}),
+		loopDone:      make(chan struct{}),
 	}
 
 	// Test addSubscription
@@ -117,6 +118,7 @@ func TestPubSubMetadata_StateManagement(t *testing.T) {
 		state:         connStateActive,
 		cmdCh:         make(chan *command, 100),
 		done:          make(chan struct{}),
+		loopDone:      make(chan struct{}),
 	}
 
 	// Test getState
@@ -144,6 +146,7 @@ func TestPubSubMetadata_SendCommand(t *testing.T) {
 		state:         connStateActive,
 		cmdCh:         make(chan *command, 100),
 		done:          make(chan struct{}),
+		loopDone:      make(chan struct{}),
 	}
 
 	cmd := &command{
@@ -178,6 +181,7 @@ func TestPubSubMetadata_SendCommand_Closed(t *testing.T) {
 		state:         connStateActive,
 		cmdCh:         make(chan *command, 1), // Small buffer
 		done:          make(chan struct{}),
+		loopDone:      make(chan struct{}),
 	}
 
 	// Fill the channel to force blocking on cmdCh
@@ -221,6 +225,7 @@ func TestPubSubMetadata_SendCommand_ContextCancellation(t *testing.T) {
 		state:         connStateActive,
 		cmdCh:         make(chan *command, 1), // Small buffer to test blocking
 		done:          make(chan struct{}),
+		loopDone:      make(chan struct{}),
 	}
 
 	// Fill the channel to force blocking
@@ -260,6 +265,7 @@ func TestPubSubMetadata_Close(t *testing.T) {
 		state:         connStateActive,
 		cmdCh:         make(chan *command, 100),
 		done:          make(chan struct{}),
+		loopDone:      make(chan struct{}),
 	}
 
 	// Close should be idempotent
@@ -366,6 +372,7 @@ func TestPubSubMetadata_PendingSubscriptions(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	sub := &subscription{
@@ -409,6 +416,7 @@ func newMockMetadataWithSubs(nodeAddr string, state connectionState, subCount in
 		state:                state,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	// Add dummy subscriptions
@@ -671,6 +679,7 @@ func TestPubSubMetadata_RemoveNonExistentSubscription(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	// Add a subscription
@@ -695,6 +704,7 @@ func TestPubSubMetadata_RemoveFromEmptyChannel(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	// Try to remove from a channel that doesn't exist (should not panic)
@@ -709,6 +719,7 @@ func TestPubSubMetadata_MultipleSubscriptionsSameChannel(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	// Add multiple subscriptions to the same channel
@@ -748,6 +759,7 @@ func TestPubSubMetadata_SubscriptionCountZero(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	if meta.subscriptionCount() != 0 {
@@ -762,6 +774,7 @@ func TestPubSubMetadata_GetSubscriptionsEmptyChannel(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	subs := meta.getSubscriptions("nonexistent")
@@ -777,6 +790,7 @@ func TestPubSubMetadata_GetAllSubscriptionsEmpty(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	all := meta.getAllSubscriptions()
@@ -792,6 +806,7 @@ func TestPubSubMetadata_ConnectionStateTransitions(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	// Active -> Failed
@@ -814,6 +829,7 @@ func TestPubSubMetadata_PendingSubscriptionOverwrite(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	sub1 := &subscription{channel: "test", state: subStatePending, confirmCh: make(chan error, 1)}
@@ -836,6 +852,7 @@ func TestPubSubMetadata_RemovePendingOnRemoveSubscription(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	sub := &subscription{channel: "test", state: subStatePending, confirmCh: make(chan error, 1)}
@@ -956,6 +973,7 @@ func TestPubSubMetadata_SendCommandWithZeroBufferChannel(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command), // Unbuffered
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	cmd := &command{
@@ -987,6 +1005,7 @@ func TestPubSubMetadata_CloseWithPendingSubscriptions(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	// Add pending subscriptions
@@ -1055,6 +1074,7 @@ func TestPubSubPool_RemovePubSub_WithData(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	// Setup pool state
@@ -1100,6 +1120,7 @@ func TestPubSubPool_RemovePubSub_KeepsOtherPubSubs(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 	meta2 := &pubSubMetadata{
 		nodeAddr:             "node1:7000",
@@ -1108,6 +1129,7 @@ func TestPubSubPool_RemovePubSub_KeepsOtherPubSubs(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	pool.mu.Lock()
@@ -1153,6 +1175,7 @@ func TestPubSubPool_RemovePubSub_FromMiddle(t *testing.T) {
 			state:                connStateActive,
 			cmdCh:                make(chan *command, 10),
 			done:                 make(chan struct{}),
+			loopDone:             make(chan struct{}),
 		}
 	}
 
@@ -1224,6 +1247,7 @@ func TestPubSubMetadata_AddSubscriptionAndCheckFirst_FirstSubscription(t *testin
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	sub := &subscription{
@@ -1261,6 +1285,7 @@ func TestPubSubMetadata_AddSubscriptionAndCheckFirst_SecondWhilePending(t *testi
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	// Add first subscription (this creates the pending entry)
@@ -1305,6 +1330,7 @@ func TestPubSubMetadata_AddSubscriptionAndCheckFirst_AfterActive(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	// Add first subscription and confirm it
@@ -1347,6 +1373,7 @@ func TestPubSubMetadata_AddSubscriptionAndCheckFirst_ConcurrentAccess(t *testing
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 100),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	numGoroutines := 100
@@ -1409,6 +1436,7 @@ func TestPubSubMetadata_SendCommand_ClosedDoneChannel(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command), // Unbuffered - will block on send
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 		logger:               defaultConfig().logger,
 	}
 
@@ -1439,6 +1467,7 @@ func TestPubSubMetadata_SendCommand_ContextTimeout(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command), // Unbuffered - will block
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 		logger:               defaultConfig().logger,
 	}
 
@@ -1464,6 +1493,7 @@ func TestPubSubMetadata_StateTransitions(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	// Test state transitions
@@ -1583,6 +1613,7 @@ func TestPubSubMetadata_AddSubscriptionAndCheckFirst_DifferentChannels(t *testin
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 10),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	// Subscribe to two different channels
@@ -1642,6 +1673,7 @@ func TestGetPubSubForHashslot_ConcurrentAccessRace(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 100),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 		mu:                   sync.RWMutex{},
 	}
 
@@ -1674,6 +1706,7 @@ func TestGetPubSubForHashslot_ConcurrentAccessRace(t *testing.T) {
 				state:                connStateActive,
 				cmdCh:                make(chan *command, 100),
 				done:                 make(chan struct{}),
+				loopDone:             make(chan struct{}),
 			}
 			pool.mu.Lock()
 			pool.pubSubMetadata[newPubSub] = newMeta
