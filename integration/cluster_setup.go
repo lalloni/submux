@@ -255,35 +255,49 @@ func cleanupAllClusters() {
 	}
 }
 
-// findAvailablePort finds a single available port by letting the OS assign one.
+// findAvailablePort finds a single available port for a Redis Cluster node.
 // It ensures BOTH the port and port+10000 are available, since Redis Cluster
 // automatically uses port+10000 for the cluster bus.
+// Ports are picked from a range that guarantees port+10000 ≤ 65535.
 // Uses a global allocator to prevent TOCTOU race conditions across parallel tests.
 func findAvailablePort() (int, error) {
-	const maxAttempts = 100
+	// Port range: 10000–55535 ensures cluster bus port (port+10000) ≤ 65535.
+	// We start from a random offset within this range to reduce collisions
+	// across sequential test runs.
+	const minPort = 10000
+	const maxPort = 55535
+	const portRange = maxPort - minPort + 1
 
 	allocatedPortsMu.Lock()
 	defer allocatedPortsMu.Unlock()
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		// Let OS assign a random available port (briefly, just to get a candidate)
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			return 0, fmt.Errorf("failed to find available port: %w", err)
-		}
-		port := ln.Addr().(*net.TCPAddr).Port
-		ln.Close()
+	// Pick a random starting offset
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, fmt.Errorf("failed to get random seed port: %w", err)
+	}
+	startOffset := ln.Addr().(*net.TCPAddr).Port % portRange
+	ln.Close()
 
-		// Check if this port or its cluster bus port are already allocated
+	for i := 0; i < portRange; i++ {
+		port := minPort + (startOffset+i)%portRange
 		clusterBusPort := port + 10000
+
+		// Skip if already allocated by us
 		if allocatedPorts[port] || allocatedPorts[clusterBusPort] {
 			continue
 		}
 
-		// Check if cluster bus port is actually available on the system
+		// Check if the port is available on the system
+		lnPort, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue
+		}
+		lnPort.Close()
+
+		// Check if cluster bus port is available on the system
 		lnBus, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", clusterBusPort))
 		if err != nil {
-			// Cluster bus port not available, try again
 			continue
 		}
 		lnBus.Close()
@@ -295,7 +309,7 @@ func findAvailablePort() (int, error) {
 		return port, nil
 	}
 
-	return 0, fmt.Errorf("failed to find available port pair after %d attempts", maxAttempts)
+	return 0, fmt.Errorf("failed to find available port pair in range %d-%d", minPort, maxPort)
 }
 
 // releasePort releases a previously allocated port from the global allocator.

@@ -5,6 +5,7 @@ All notable changes to the submux project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **Integration test port allocation on macOS**: `findAvailablePort` relied on OS-assigned ephemeral ports (49152–65535 on macOS) and added 10000 for the Redis Cluster bus port, producing invalid ports > 65535. Now picks from the explicit range 10000–55535 to guarantee valid bus ports.
 - **Direct client for node connections**: `createPubSubToNode` now creates a direct `redis.Client` to the target node address instead of routing through the cluster client's slot map. This prevents resubscription failures after hashslot migrations when the cluster client's internal slot map is stale, which caused MOVED errors, event loop failures, and permanently failed subscriptions.
 - **Integration test SSubscribe/SPublish correctness**: Removed incorrect `Publish` fallbacks in integration tests that silently sent messages to the wrong pub/sub namespace (PUBLISH vs SPUBLISH). Removed unnecessary `time.Sleep` after `ReloadState` calls. These fixes eliminate false test passes and improve test reliability.
 - **Topology resubscribe context leak**: `defer cancel()` inside nested loops in `resubscribeOnNewNode` caused context timers to accumulate until function return. Replaced with explicit `cancel()` at end of each iteration and before `continue` to release resources promptly.
