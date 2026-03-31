@@ -4,6 +4,9 @@ All notable changes to the submux project will be documented in this file.
 
 ## [Unreleased]
 
+### Improved
+- **Enhanced panic recovery logging in callbacks**: When a user-provided callback panics, the log entry now includes `subscription_type`, `channel`, and `pattern` (when non-empty) fields alongside the existing `error` and `stack` attributes. This provides immediate context about which callback panicked without parsing the stack trace.
+
 ### Fixed
 - **Integration test port allocation on macOS**: `findAvailablePort` relied on OS-assigned ephemeral ports (49152–65535 on macOS) and added 10000 for the Redis Cluster bus port, producing invalid ports > 65535. Now picks from the explicit range 10000–55535 to guarantee valid bus ports.
 - **Direct client for node connections**: `createPubSubToNode` now creates a direct `redis.Client` to the target node address instead of routing through the cluster client's slot map. This prevents resubscription failures after hashslot migrations when the cluster client's internal slot map is stale, which caused MOVED errors, event loop failures, and permanently failed subscriptions.
