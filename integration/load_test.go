@@ -15,7 +15,7 @@ import (
 
 // TestHighSubscriptionCount tests subscribing to a large number of channels.
 func TestHighSubscriptionCount(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping load test in short mode")
 	}
@@ -70,7 +70,7 @@ func TestHighSubscriptionCount(t *testing.T) {
 		if received >= expectedMessages {
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 	received = messageCount.Load()
 	if received < expectedMessages {
@@ -132,7 +132,7 @@ func TestHighSubscriptionCount_MemoryUsage(t *testing.T) {
 
 // TestHighMessageThroughput tests high message throughput.
 func TestHighMessageThroughput(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping load test in short mode")
 	}
@@ -163,8 +163,7 @@ func TestHighMessageThroughput(t *testing.T) {
 		t.Fatalf("Failed to subscribe: %v", err)
 	}
 
-	// Give subscription time to establish
-	time.Sleep(50 * time.Millisecond)
+	// SubscribeSync already blocks until subscription is confirmed; no sleep needed
 
 	// Publish messages at high rate
 	pubClient := cluster.GetClusterClient()
@@ -193,7 +192,7 @@ func TestHighMessageThroughput(t *testing.T) {
 
 	// Wait for all messages to be received
 	timeout := time.After(10 * time.Second)
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -234,7 +233,7 @@ func TestHighMessageThroughput(t *testing.T) {
 
 // TestHighMessageThroughput_CallbackPerformance tests callback performance under load.
 func TestHighMessageThroughput_CallbackPerformance(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping load test in short mode")
 	}
@@ -282,7 +281,7 @@ func TestHighMessageThroughput_CallbackPerformance(t *testing.T) {
 
 	// Wait for all messages
 	timeout := time.After(10 * time.Second)
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -330,13 +329,13 @@ func TestHighMessageThroughput_CallbackPerformance(t *testing.T) {
 
 // TestLongRunningSubscriptions tests subscriptions over an extended period.
 func TestLongRunningSubscriptions(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping long-running test in short mode")
 	}
 
-	// Run for 3 seconds (can be extended for real stress testing via env var)
-	duration := 3 * time.Second
+	// Run for 1.5 seconds (can be extended for real stress testing via env var)
+	duration := 1500 * time.Millisecond
 	if d := os.Getenv("LONG_TEST_DURATION"); d != "" {
 		var err error
 		duration, err = time.ParseDuration(d)
@@ -380,7 +379,7 @@ func TestLongRunningSubscriptions(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
 
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
 	var publishedCount atomic.Int64

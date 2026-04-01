@@ -82,8 +82,8 @@ func (tc *TestCluster) StartNode(ctx context.Context, nodeAddr string) error {
 // Before the fix: the second Unsubscribe blocks until the context deadline.
 // After the fix: it returns immediately with an error.
 func TestUnsubscribe_AfterNodeFailure_DoesNotBlock(t *testing.T) {
-	t.Parallel()
-	cluster := setupTestCluster(t, 3, 2)
+	// Sequential: dedicated cluster with node stop + event loop crash timing.
+	cluster := setupTestCluster(t, 3, 1)
 	client := cluster.GetClusterClient()
 
 	// No auto-resubscribe: we want the event loop to stay dead.
@@ -149,8 +149,10 @@ func TestUnsubscribe_AfterNodeFailure_DoesNotBlock(t *testing.T) {
 		t.Fatalf("Failed to stop node: %v", err)
 	}
 
-	// Wait briefly for the node to be fully down
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the node to be fully down
+	if err := waitForNodeDown(t, masterNode, 2*time.Second); err != nil {
+		t.Fatalf("Node did not go down: %v", err)
+	}
 
 	// Unsubscribe A — this sends an UNSUBSCRIBE command to the event loop.
 	// The event loop tries to send it to the dead Redis node, gets an error,
@@ -160,7 +162,7 @@ func TestUnsubscribe_AfterNodeFailure_DoesNotBlock(t *testing.T) {
 	t.Logf("channelA unsubscribe returned: %v", errA)
 
 	// Give the event loop goroutine time to fully exit after processing the command
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	// Unsubscribe B — the event loop is now dead. sendCommand succeeds (cmdCh has
 	// buffer space, meta.done is not closed), but nobody reads from cmdCh.
@@ -187,7 +189,7 @@ func TestUnsubscribe_AfterNodeFailure_DoesNotBlock(t *testing.T) {
 }
 
 func TestReplicaFailure_Recovery(t *testing.T) {
-	t.Parallel() // Dedicated cluster - safe to run in parallel
+	// Sequential: dedicated cluster with replica stop + recovery timing.
 	// Use 6 nodes (3 shards: 1 master + 1 replica each) which is enough for replica failure test
 	cluster := setupTestCluster(t, 3, 2)
 	client := cluster.GetClusterClient()
@@ -202,7 +204,7 @@ func TestReplicaFailure_Recovery(t *testing.T) {
 	}
 	defer subMux.Close()
 
-	channelName := "replica-fail-test"
+	channelName := uniqueChannel("replica-fail-test")
 	messages := make(chan *submux.Message, 10)
 
 	_, err = subMux.SubscribeSync(context.Background(), []string{channelName}, func(ctx context.Context, msg *submux.Message) {
@@ -302,8 +304,10 @@ func TestReplicaFailure_Recovery(t *testing.T) {
 	// Wait for cluster to detect replica failure and rebalance
 	// Note: replica failure should NOT make cluster unhealthy (only reduce redundancy)
 	// So we just wait a brief moment for the cluster to detect the disconnection
-	t.Log("Waiting for cluster to detect replica failure...")
-	time.Sleep(150 * time.Millisecond)
+	t.Log("Waiting for replica node to go down...")
+	if err := waitForNodeDown(t, targetReplica, 2*time.Second); err != nil {
+		t.Fatalf("Replica did not go down: %v", err)
+	}
 
 	receivedRecovery := false
 RecoveryLoop:
@@ -320,7 +324,7 @@ RecoveryLoop:
 				receivedRecovery = true
 				break RecoveryLoop
 			}
-		case <-time.After(200 * time.Millisecond):
+		case <-time.After(500 * time.Millisecond):
 			// retry
 		}
 	}
@@ -337,20 +341,20 @@ RecoveryLoop:
 }
 
 func TestRollingRestart_Stability(t *testing.T) {
-	t.Parallel() // Dedicated cluster - safe to run in parallel
+	// Sequential: dedicated cluster with chaos monkey node restarts.
 	cluster := setupTestCluster(t, 3, 2)
 	client := cluster.GetClusterClient()
 
 	subMux, err := submux.New(client,
 		submux.WithAutoResubscribe(true),
-		submux.WithTopologyPollInterval(500*time.Millisecond),
+		submux.WithTopologyPollInterval(200*time.Millisecond),
 	)
 	if err != nil {
 		t.Fatalf("Failed to create SubMux: %v", err)
 	}
 	defer subMux.Close()
 
-	channelName := "stability-test"
+	channelName := uniqueChannel("stability-test")
 	messages := make(chan *submux.Message, 100)
 
 	_, err = subMux.SubscribeSync(context.Background(), []string{channelName}, func(ctx context.Context, msg *submux.Message) {

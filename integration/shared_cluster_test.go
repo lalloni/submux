@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lalloni/submux"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -88,7 +89,7 @@ func waitForClusterHealthy(t testing.TB, client *redis.ClusterClient, timeout ti
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(50 * time.Millisecond)
+	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 
 	var lastInfo string
@@ -157,7 +158,7 @@ func waitForReplicasReady(t testing.TB, client *redis.ClusterClient, requiredPer
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(50 * time.Millisecond)
+	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 
 	var lastDiagnostic string
@@ -248,7 +249,7 @@ func WaitForSlotConvergence(t testing.TB, cluster *TestCluster, slot int, expect
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(50 * time.Millisecond)
+	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -287,6 +288,50 @@ func WaitForSlotConvergence(t testing.TB, cluster *TestCluster, slot int, expect
 				t.Logf("Slot convergence disagreements: %s", strings.Join(disagreements, "; "))
 			}
 		}
+	}
+}
+
+// waitForNodeDown polls a Redis node until it stops responding to PING, or until timeout.
+// This replaces fixed time.Sleep calls after StopNode, finishing as soon as the node is actually down.
+func waitForNodeDown(t testing.TB, nodeAddr string, timeout time.Duration) error {
+	t.Helper()
+
+	start := time.Now()
+	t.Logf("Waiting for node %s to go down (timeout=%v)...", nodeAddr, timeout)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("node %s still reachable after %v", nodeAddr, timeout)
+		case <-ticker.C:
+			client := redis.NewClient(&redis.Options{Addr: nodeAddr, DialTimeout: 50 * time.Millisecond})
+			err := client.Ping(ctx).Err()
+			client.Close()
+			if err != nil {
+				elapsed := time.Since(start)
+				t.Logf("✓ Node %s down after %v", nodeAddr, elapsed)
+				return nil
+			}
+		}
+	}
+}
+
+// waitForMessage waits for a message on the given channel, returning it or failing with a timeout.
+// This replaces the repeated select { case msg := <-ch: ... case <-time.After(N): t.Fatal(...) } pattern.
+func waitForMessage(t testing.TB, ch <-chan *submux.Message, timeout time.Duration) *submux.Message {
+	t.Helper()
+	select {
+	case msg := <-ch:
+		return msg
+	case <-time.After(timeout):
+		t.Fatalf("Timeout (%v) waiting for message", timeout)
+		return nil
 	}
 }
 

@@ -503,7 +503,7 @@ func (tc *TestCluster) waitForNodesReady(ctx context.Context, timeout time.Durat
 
 	for _, node := range tc.nodes {
 		go func(nodeAddr string) {
-			ticker := time.NewTicker(50 * time.Millisecond)
+			ticker := time.NewTicker(20 * time.Millisecond)
 			defer ticker.Stop()
 
 			for {
@@ -568,7 +568,7 @@ func (tc *TestCluster) initializeCluster(ctx context.Context) error {
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	ticker := time.NewTicker(50 * time.Millisecond)
+	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {

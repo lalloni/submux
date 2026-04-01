@@ -11,7 +11,7 @@ import (
 )
 
 func TestConcurrentSubscriptions(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -37,7 +37,7 @@ func TestConcurrentSubscriptions(t *testing.T) {
 
 			channels := make([]string, channelsPerGoroutine)
 			for j := range channelsPerGoroutine {
-				channels[j] = fmt.Sprintf("concurrent-%d-%d", id, j)
+				channels[j] = uniqueChannel(fmt.Sprintf("concurrent-%d-%d", id, j))
 			}
 
 			subCtx, subCancel := context.WithTimeout(testCtx, 10*time.Second)
@@ -62,7 +62,7 @@ func TestConcurrentSubscriptions(t *testing.T) {
 }
 
 func TestConcurrentMessageHandling(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -76,11 +76,12 @@ func TestConcurrentMessageHandling(t *testing.T) {
 	defer subCancel()
 
 	// Subscribe to a channel
+	channel := uniqueChannel("concurrent-msg")
 	messageCount := 0
 	var mu sync.Mutex
 	messages := make(chan *submux.Message, 1000)
 
-	_, err = subMux.SubscribeSync(subCtx, []string{"concurrent-msg"}, func(ctx context.Context, msg *submux.Message) {
+	_, err = subMux.SubscribeSync(subCtx, []string{channel}, func(ctx context.Context, msg *submux.Message) {
 		if msg.Type == submux.MessageTypeMessage {
 			mu.Lock()
 			messageCount++
@@ -103,7 +104,7 @@ func TestConcurrentMessageHandling(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := range messagesPerPublisher {
-				err := pubClient.Publish(context.Background(), "concurrent-msg", fmt.Sprintf("msg-%d-%d", id, j)).Err()
+				err := pubClient.Publish(context.Background(), channel, fmt.Sprintf("msg-%d-%d", id, j)).Err()
 				if err != nil {
 					t.Errorf("Failed to publish message %d-%d: %v", id, j, err)
 				}
@@ -150,7 +151,7 @@ func TestConcurrentMessageHandling(t *testing.T) {
 }
 
 func TestConcurrentSubscribeUnsubscribe(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -159,7 +160,7 @@ func TestConcurrentSubscribeUnsubscribe(t *testing.T) {
 	}
 	defer subMux.Close()
 
-	channels := []string{"concurrent-sub-1", "concurrent-sub-2", "concurrent-sub-3"}
+	channels := []string{uniqueChannel("concurrent-sub-1"), uniqueChannel("concurrent-sub-2"), uniqueChannel("concurrent-sub-3")}
 	var wg sync.WaitGroup
 	errors := make(chan error, 20)
 
@@ -206,7 +207,7 @@ func TestConcurrentSubscribeUnsubscribe(t *testing.T) {
 }
 
 func TestConcurrentMultipleSubscriptionsSameChannel(t *testing.T) {
-	// Note: not using t.Parallel() as this test is timing-sensitive
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -292,7 +293,7 @@ func TestConcurrentMultipleSubscriptionsSameChannel(t *testing.T) {
 }
 
 func TestConcurrentTopologyChanges(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -306,7 +307,7 @@ func TestConcurrentTopologyChanges(t *testing.T) {
 	defer subCancel()
 
 	// Subscribe to multiple channels
-	channels := []string{"topo-1", "topo-2", "topo-3"}
+	channels := []string{uniqueChannel("topo-1"), uniqueChannel("topo-2"), uniqueChannel("topo-3")}
 	messages := make(chan *submux.Message, 100)
 	signalMessages := make(chan *submux.Message, 100)
 
