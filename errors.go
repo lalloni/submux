@@ -17,4 +17,8 @@ var (
 
 	// ErrClosed is returned when an operation is attempted on a closed SubMux.
 	ErrClosed = errors.New("submux: SubMux is closed")
+
+	// ErrEventLoopStopped is returned when an operation cannot complete because
+	// the event loop goroutine has exited (due to Redis error or connection close).
+	ErrEventLoopStopped = errors.New("submux: event loop stopped")
 )

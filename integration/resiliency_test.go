@@ -71,6 +71,121 @@ func (tc *TestCluster) StartNode(ctx context.Context, nodeAddr string) error {
 	return fmt.Errorf("node %s not found", nodeAddr)
 }
 
+// TestUnsubscribe_AfterNodeFailure_DoesNotBlock verifies that Sub.Unsubscribe()
+// returns promptly when the underlying event loop has already stopped due to a
+// node failure, rather than blocking indefinitely.
+//
+// Strategy: subscribe to two channels on the same hashslot (same event loop).
+// Stop the node, then unsubscribe the first — this triggers the event loop to
+// crash (command fails). Then unsubscribe the second — the event loop is already
+// dead, and the command sits in the buffer with nobody reading it.
+// Before the fix: the second Unsubscribe blocks until the context deadline.
+// After the fix: it returns immediately with an error.
+func TestUnsubscribe_AfterNodeFailure_DoesNotBlock(t *testing.T) {
+	t.Parallel()
+	cluster := setupTestCluster(t, 3, 2)
+	client := cluster.GetClusterClient()
+
+	// No auto-resubscribe: we want the event loop to stay dead.
+	subMux, err := submux.New(client,
+		submux.WithTopologyPollInterval(100*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("Failed to create SubMux: %v", err)
+	}
+	defer subMux.Close()
+
+	// Use Redis hashtag syntax so both channels map to the same hashslot
+	// (and therefore the same node and event loop).
+	tag := uniqueChannel("unsub-block")
+	channelA := "{" + tag + "}a"
+	channelB := "{" + tag + "}b"
+
+	messagesA := make(chan string, 10)
+	subA, err := subMux.SubscribeSync(context.Background(), []string{channelA}, func(ctx context.Context, msg *submux.Message) {
+		if msg.Type == submux.MessageTypeMessage {
+			messagesA <- msg.Payload
+		}
+	})
+	if err != nil {
+		t.Fatalf("Failed to subscribe channelA: %v", err)
+	}
+
+	messagesB := make(chan string, 10)
+	subB, err := subMux.SubscribeSync(context.Background(), []string{channelB}, func(ctx context.Context, msg *submux.Message) {
+		if msg.Type == submux.MessageTypeMessage {
+			messagesB <- msg.Payload
+		}
+	})
+	if err != nil {
+		t.Fatalf("Failed to subscribe channelB: %v", err)
+	}
+
+	// Verify connectivity on both channels
+	for _, ch := range []struct {
+		name string
+		msgs chan string
+	}{{channelA, messagesA}, {channelB, messagesB}} {
+		err = client.Publish(context.Background(), ch.name, "hello").Err()
+		if err != nil {
+			t.Fatalf("Failed to publish to %s: %v", ch.name, err)
+		}
+		select {
+		case <-ch.msgs:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Timeout waiting for message on %s", ch.name)
+		}
+	}
+
+	// Stop the master node for the shared hashslot
+	hashslot := submux.Hashslot(channelA)
+	masterNode, err := cluster.GetNodeForHashslot(hashslot)
+	if err != nil {
+		t.Fatalf("Failed to get master for hashslot %d: %v", hashslot, err)
+	}
+	t.Logf("Stopping master node %s (hashslot %d)", masterNode, hashslot)
+	err = cluster.StopNode(masterNode)
+	if err != nil {
+		t.Fatalf("Failed to stop node: %v", err)
+	}
+
+	// Wait briefly for the node to be fully down
+	time.Sleep(500 * time.Millisecond)
+
+	// Unsubscribe A — this sends an UNSUBSCRIBE command to the event loop.
+	// The event loop tries to send it to the dead Redis node, gets an error,
+	// sends the error back on cmd.response, then sets connStateFailed and exits.
+	t.Log("Unsubscribing channelA (triggers event loop crash)...")
+	errA := subA.Unsubscribe(context.Background())
+	t.Logf("channelA unsubscribe returned: %v", errA)
+
+	// Give the event loop goroutine time to fully exit after processing the command
+	time.Sleep(500 * time.Millisecond)
+
+	// Unsubscribe B — the event loop is now dead. sendCommand succeeds (cmdCh has
+	// buffer space, meta.done is not closed), but nobody reads from cmdCh.
+	// Without the fix: blocks until ctx deadline (3s).
+	// With the fix: returns immediately.
+	t.Log("Unsubscribing channelB (event loop already dead)...")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	errB := subB.Unsubscribe(ctx)
+	elapsed := time.Since(start)
+
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("BUG: Unsubscribe blocked for %v and hit deadline — event loop is dead but Unsubscribe did not return", elapsed)
+	}
+
+	t.Logf("channelB unsubscribe completed in %v (err: %v)", elapsed, errB)
+
+	// After the fix, this should complete in well under 1 second
+	if elapsed > 2*time.Second {
+		t.Errorf("Unsubscribe took %v — too slow, likely hitting internal timeout instead of immediate detection", elapsed)
+	}
+}
+
 func TestReplicaFailure_Recovery(t *testing.T) {
 	t.Parallel() // Dedicated cluster - safe to run in parallel
 	// Use 6 nodes (3 shards: 1 master + 1 replica each) which is enough for replica failure test

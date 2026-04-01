@@ -114,6 +114,12 @@ type pubSubMetadata struct {
 	// done is closed when the connection is closed.
 	done chan struct{}
 
+	// loopDone is closed by the event loop goroutine when it exits (for any reason:
+	// Redis error, PubSub channel close, or clean shutdown via <-done).
+	// This allows sendCommand and unsubscribe waits to detect a dead event loop
+	// without waiting for meta.close() to close the done channel.
+	loopDone chan struct{}
+
 	// wg tracks the event loop goroutine.
 	wg sync.WaitGroup
 
@@ -288,6 +294,8 @@ func (m *pubSubMetadata) sendCommand(ctx context.Context, cmd *command) error {
 	select {
 	case m.cmdCh <- cmd:
 		return nil
+	case <-m.loopDone:
+		return fmt.Errorf("pubsub event loop stopped: %w", ErrEventLoopStopped)
 	case <-m.done:
 		return fmt.Errorf("pubsub closed")
 	case <-ctx.Done():
@@ -663,6 +671,7 @@ func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 100),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	// Set the redirect callback to trigger topology refresh on MOVED/ASK errors

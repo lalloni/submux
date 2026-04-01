@@ -152,7 +152,6 @@ import (
 	"fmt"
 	"slices"
 	"sync"
-	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -596,24 +595,21 @@ func (sm *SubMux) unsubscribeSubscription(ctx context.Context, sub *Sub) error {
 	}
 
 	// Phase 2: Wait for responses from event loop.
-	// When ctx has no deadline (e.g. context.Background() from subscribe cleanup),
-	// use a timeout to prevent hanging forever if the event loop exits (e.g. connection
-	// failure) after the command is queued but before processing it.
-	waitCtx := ctx
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		waitCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-	}
+	// Select on loopDone to detect if the event loop has exited (e.g. connection
+	// failure), which means our command will never be processed.
 	for _, p := range pending {
 		select {
 		case err := <-p.response:
 			if err != nil && firstErr == nil {
 				firstErr = err
 			}
-		case <-waitCtx.Done():
+		case <-p.meta.loopDone:
 			if firstErr == nil {
-				firstErr = waitCtx.Err()
+				firstErr = fmt.Errorf("pubsub event loop stopped: %w", ErrEventLoopStopped)
+			}
+		case <-ctx.Done():
+			if firstErr == nil {
+				firstErr = ctx.Err()
 			}
 		}
 		// Phase 3: Clean metadata after response

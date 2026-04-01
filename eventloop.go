@@ -12,7 +12,13 @@ import (
 // runEventLoop runs the single event loop goroutine for a PubSub metadata.
 // It handles both sending commands to Redis and processing incoming messages.
 func runEventLoop(meta *pubSubMetadata) {
+	// Defer ordering matters: defers execute LIFO.
+	// 1. wg.Done() runs last — signals meta.close() waiters
+	// 2. close(loopDone) runs second — unblocks sendCommand/unsubscribe waiters
+	// 3. drainCmdCh runs first — sends errors to commands already buffered in cmdCh
 	defer meta.wg.Done()
+	defer close(meta.loopDone)
+	defer drainCmdCh(meta)
 
 	// Get the message channel from PubSub
 	// ChannelWithSubscriptions returns a channel that delivers both *redis.Subscription
@@ -283,6 +289,28 @@ func handleSMessageFromPubSub(meta *pubSubMetadata, channel, payload string) err
 		invokeCallback(meta.lifecycleCtx, meta.logger, meta.recorder, meta.workerPool, meta.callbackWg, sub.callback, msg)
 	}
 	return nil
+}
+
+// drainCmdCh drains all pending commands from cmdCh, sending an error to each
+// response channel. Called when the event loop exits to unblock any goroutines
+// waiting on cmd.response.
+func drainCmdCh(meta *pubSubMetadata) {
+	for {
+		select {
+		case cmd := <-meta.cmdCh:
+			if cmd == nil {
+				continue
+			}
+			if cmd.response != nil {
+				select {
+				case cmd.response <- fmt.Errorf("pubsub event loop stopped: %w", ErrEventLoopStopped):
+				default:
+				}
+			}
+		default:
+			return
+		}
+	}
 }
 
 // notifySubscriptionsOfFailure notifies all subscriptions on this PubSub of a failure.

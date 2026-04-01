@@ -1650,6 +1650,7 @@ func TestResubscribeOnNewNode_RemovesFromOldMetadata(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 100),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	// Set up new PubSub with metadata
@@ -1663,6 +1664,7 @@ func TestResubscribeOnNewNode_RemovesFromOldMetadata(t *testing.T) {
 		state:                connStateActive,
 		cmdCh:                make(chan *command, 100),
 		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
 	}
 
 	pool.mu.Lock()
