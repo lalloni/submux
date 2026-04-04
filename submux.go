@@ -528,17 +528,27 @@ func (sm *SubMux) unsubscribeSubscription(ctx context.Context, sub *Sub) error {
 	sm.mu.Lock()
 	for channel, internalSubs := range subsByChannel {
 		allSubs := sm.subscriptions[channel]
-		for _, internalSub := range internalSubs {
-			for i, s := range allSubs {
-				if s == internalSub {
-					sm.subscriptions[channel] = slices.Delete(allSubs, i, i+1)
-					allSubs = sm.subscriptions[channel]
-					break
-				}
+		// Build removal set for O(1) lookups
+		toRemove := make(map[*subscription]struct{}, len(internalSubs))
+		for _, s := range internalSubs {
+			toRemove[s] = struct{}{}
+		}
+		// Filter in one pass — O(n) instead of O(n²)
+		n := 0
+		for _, s := range allSubs {
+			if _, remove := toRemove[s]; !remove {
+				allSubs[n] = s
+				n++
 			}
 		}
-		if len(sm.subscriptions[channel]) == 0 {
+		// Clear trailing pointers to avoid memory leaks
+		for i := n; i < len(allSubs); i++ {
+			allSubs[i] = nil
+		}
+		if n == 0 {
 			delete(sm.subscriptions, channel)
+		} else {
+			sm.subscriptions[channel] = allSubs[:n]
 		}
 	}
 	sm.mu.Unlock()
