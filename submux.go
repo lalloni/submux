@@ -26,7 +26,7 @@
 //	}
 //	defer subMux.Close()
 //
-//	sub, err := subMux.SubscribeSync(context.Background(), []string{"mychannel"}, func(msg *submux.Message) {
+//	sub, err := subMux.SubscribeSync(context.Background(), []string{"mychannel"}, func(ctx context.Context, msg *submux.Message) {
 //	    switch msg.Type {
 //	    case submux.MessageTypeMessage:
 //	        fmt.Printf("Received message on %s: %s\n", msg.Channel, msg.Payload)
