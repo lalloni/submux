@@ -703,7 +703,14 @@ func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(parentCtx context.
 	// would detect the timeout, creating a race where doneCh closes before the
 	// monitoring ticker fires. Adding 2×stallCheckInterval ensures at least one
 	// monitoring tick can observe the timeout and send the signal.
-	ctxDeadline := migrationTimeout + 2*stallCheckInterval
+	// Ensure at least 1 second of headroom so that GC pauses or scheduling
+	// delays don't cause the context to expire before the monitoring goroutine
+	// detects the timeout.
+	headroom := 2 * stallCheckInterval
+	if headroom < 1*time.Second {
+		headroom = 1 * time.Second
+	}
+	ctxDeadline := migrationTimeout + headroom
 	migrationCtx, migrationCancel := context.WithTimeout(parentCtx, ctxDeadline)
 	defer migrationCancel()
 
