@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -1017,5 +1018,240 @@ drainSignals:
 			// Republish
 			_ = client.SPublish(context.Background(), channel1, "after-migration").Err()
 		}
+	}
+}
+
+// TestBalancedAllDistribution verifies that with BalancedAll node preference,
+// pubsub connections are distributed across all shard nodes (masters + replicas),
+// not concentrated on masters only.
+//
+// The test subscribes to enough sharded channels to cover all 3 shards and
+// inspects CLIENT LIST on each Redis node to count pubsub connections.
+func TestBalancedAllDistribution(t *testing.T) {
+	t.Parallel()
+	cluster := getSharedCluster(t)
+	client := cluster.GetClusterClient()
+
+	subMux, err := submux.New(client,
+		submux.WithNodePreference(submux.BalancedAll),
+		submux.WithTopologyPollInterval(200*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("Failed to create SubMux: %v", err)
+	}
+	defer subMux.Close()
+
+	// Wait for topology to be populated so BalancedAll can see all nodes.
+	time.Sleep(500 * time.Millisecond)
+
+	// Generate channels that cover all 3 shards. We need at least one channel
+	// per shard; use more to increase the chance of exercising balancing.
+	// Group channels by the shard (master address) they belong to.
+	type shardInfo struct {
+		masterAddr string
+		channels   []string
+	}
+	shardMap := make(map[string]*shardInfo) // masterAddr -> info
+
+	// Generate channels until we have at least 6 channels per shard (to create
+	// enough subscriptions that a correct implementation would spread connections).
+	const minPerShard = 6
+	const maxAttempts = 500
+	base := uniqueChannel("bal-dist")
+	for i := 0; i < maxAttempts; i++ {
+		ch := fmt.Sprintf("%s-%d", base, i)
+		hs := submux.Hashslot(ch)
+		masterAddr, err := cluster.GetNodeForHashslot(hs)
+		if err != nil {
+			continue
+		}
+		si, ok := shardMap[masterAddr]
+		if !ok {
+			si = &shardInfo{masterAddr: masterAddr}
+			shardMap[masterAddr] = si
+		}
+		si.channels = append(si.channels, ch)
+
+		// Check if all shards have enough
+		allSatisfied := len(shardMap) >= 3
+		for _, si := range shardMap {
+			if len(si.channels) < minPerShard {
+				allSatisfied = false
+				break
+			}
+		}
+		if allSatisfied {
+			break
+		}
+	}
+
+	if len(shardMap) < 3 {
+		t.Fatalf("Could not generate channels for all 3 shards; only found %d shards", len(shardMap))
+	}
+	for master, si := range shardMap {
+		if len(si.channels) < minPerShard {
+			t.Fatalf("Shard %s has only %d channels (need %d)", master, len(si.channels), minPerShard)
+		}
+	}
+
+	// Subscribe to all channels using SSubscribe (sharded pubsub).
+	var allChannels []string
+	for _, si := range shardMap {
+		allChannels = append(allChannels, si.channels...)
+	}
+	t.Logf("Subscribing to %d channels across %d shards", len(allChannels), len(shardMap))
+
+	for _, ch := range allChannels {
+		_, err := subMux.SSubscribeSync(context.Background(), []string{ch}, func(ctx context.Context, msg *submux.Message) {
+			// no-op callback
+		})
+		if err != nil {
+			t.Fatalf("Failed to SSubscribeSync to %s: %v", ch, err)
+		}
+	}
+
+	// Give connections time to be established.
+	time.Sleep(500 * time.Millisecond)
+
+	// Count pubsub connections on each node via CLIENT LIST.
+	nodes := cluster.GetNodes()
+	nodeConns := make(map[string]int) // nodeAddr -> pubsub connection count
+
+	for _, node := range nodes {
+		c := redis.NewClient(&redis.Options{
+			Addr:        node.Address,
+			DialTimeout: 2 * time.Second,
+		})
+		// CLIENT LIST TYPE pubsub returns only pubsub clients.
+		result, err := c.Do(context.Background(), "CLIENT", "LIST", "TYPE", "pubsub").Text()
+		c.Close()
+		if err != nil {
+			t.Fatalf("CLIENT LIST on %s failed: %v", node.Address, err)
+		}
+		// Each non-empty line is a connected client.
+		count := 0
+		for _, line := range strings.Split(result, "\n") {
+			if strings.TrimSpace(line) != "" {
+				count++
+			}
+		}
+		nodeConns[node.Address] = count
+	}
+
+	// Log the distribution for debugging.
+	t.Log("Connection distribution:")
+	var sortedAddrs []string
+	for addr := range nodeConns {
+		sortedAddrs = append(sortedAddrs, addr)
+	}
+	sort.Strings(sortedAddrs)
+	for _, addr := range sortedAddrs {
+		role := "replica"
+		for _, si := range shardMap {
+			if si.masterAddr == addr {
+				role = "master"
+				break
+			}
+		}
+		t.Logf("  %s (%s): %d pubsub connections", addr, role, nodeConns[addr])
+	}
+
+	// Verify distribution: each shard should have connections on at least 2 nodes
+	// (master + at least 1 replica) rather than all connections on the master.
+	// Build shard membership from CLUSTER NODES (which includes replica info).
+	ctx := context.Background()
+	clusterNodesStr, err := client.ClusterNodes(ctx).Result()
+	if err != nil {
+		t.Fatalf("ClusterNodes failed: %v", err)
+	}
+
+	// Parse CLUSTER NODES to build shard membership: masterAddr -> all node addrs.
+	type shardDist struct {
+		masterAddr   string
+		allNodes     []string
+		nodesWithPub []string
+		totalConns   int
+	}
+
+	masterIDToAddr := make(map[string]string)   // nodeID -> address (masters only)
+	replicaOf := make(map[string]string)         // replicaAddr -> masterAddr
+	nodeIDToAddr := make(map[string]string)      // nodeID -> address (all nodes)
+
+	for _, line := range strings.Split(clusterNodesStr, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 8 {
+			continue
+		}
+		nodeID := fields[0]
+		// Address field may contain "@bus-port" suffix; strip it.
+		addr := strings.Split(fields[1], "@")[0]
+		flags := fields[2]
+		masterID := fields[3] // "-" for masters, master's nodeID for replicas
+
+		nodeIDToAddr[nodeID] = addr
+
+		if strings.Contains(flags, "master") {
+			masterIDToAddr[nodeID] = addr
+		} else if strings.Contains(flags, "slave") || strings.Contains(flags, "replica") {
+			// We'll resolve masterAddr after we've parsed all nodes.
+			replicaOf[addr] = masterID // temporarily store masterID
+		}
+	}
+
+	// Resolve replica -> masterAddr using masterIDToAddr.
+	shardMembers := make(map[string][]string) // masterAddr -> all node addrs (including master)
+	for _, masterAddr := range masterIDToAddr {
+		shardMembers[masterAddr] = append(shardMembers[masterAddr], masterAddr)
+	}
+	for replicaAddr, masterNodeID := range replicaOf {
+		masterAddr, ok := masterIDToAddr[masterNodeID]
+		if !ok {
+			t.Logf("Warning: replica %s refers to unknown master ID %s", replicaAddr, masterNodeID)
+			continue
+		}
+		shardMembers[masterAddr] = append(shardMembers[masterAddr], replicaAddr)
+	}
+
+	var shardDists []shardDist
+	for masterAddr, members := range shardMembers {
+		sd := shardDist{masterAddr: masterAddr, allNodes: members}
+		for _, addr := range members {
+			if c := nodeConns[addr]; c > 0 {
+				sd.nodesWithPub = append(sd.nodesWithPub, addr)
+				sd.totalConns += c
+			}
+		}
+		shardDists = append(shardDists, sd)
+	}
+
+	totalNodesWithConns := 0
+	for _, sd := range shardDists {
+		totalNodesWithConns += len(sd.nodesWithPub)
+		t.Logf("Shard (master %s): %d/%d nodes have pubsub connections (total %d conns)",
+			sd.masterAddr, len(sd.nodesWithPub), len(sd.allNodes), sd.totalConns)
+
+		if len(sd.nodesWithPub) == 0 {
+			t.Errorf("Shard %s has no pubsub connections at all", sd.masterAddr)
+			continue
+		}
+
+		// With BalancedAll, connections should be on more than just the master.
+		if len(sd.nodesWithPub) < 2 && len(sd.allNodes) >= 2 {
+			t.Errorf("Shard %s: connections only on %v but shard has %d nodes (%v); "+
+				"expected BalancedAll to distribute across multiple nodes",
+				sd.masterAddr, sd.nodesWithPub, len(sd.allNodes), sd.allNodes)
+		}
+	}
+
+	// Global check: with 9 nodes total and BalancedAll, we expect connections
+	// on significantly more than just the 3 masters.
+	if totalNodesWithConns <= len(shardDists) {
+		t.Errorf("Connections only on %d nodes (same as shard count %d); "+
+			"BalancedAll should distribute across replicas too",
+			totalNodesWithConns, len(shardDists))
 	}
 }

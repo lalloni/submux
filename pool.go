@@ -529,6 +529,11 @@ func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int) 
 // selectLeastLoadedAcrossNodes finds the least-loaded connection across all given nodes.
 // If no connections exist, creates a new one to the least-loaded node (by connection count).
 // Uses a pending connections map to prevent duplicate connection creation under high concurrency.
+//
+// Distribution strategy: "spread first, then balance." If any node in the shard has
+// zero connections, a new connection is created there instead of reusing an existing
+// connection on another node. This ensures connections are distributed across all nodes
+// (masters + replicas) within each shard before load-balancing across existing connections.
 func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot int, nodes []string) (*redis.PubSub, error) {
 	p.mu.Lock()
 
@@ -536,12 +541,14 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 	var bestNodeAddr string
 	bestCount := math.MaxInt
 	nodeConnCounts := make(map[string]int)
+	hasUnconnectedNode := false
 
 	// Find least-loaded connection across ALL nodes
 	for _, nodeAddr := range nodes {
 		pubsubs, ok := p.nodePubSubs[nodeAddr]
-		if !ok {
+		if !ok || len(pubsubs) == 0 {
 			nodeConnCounts[nodeAddr] = 0
+			hasUnconnectedNode = true
 			continue
 		}
 
@@ -557,14 +564,16 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 		}
 	}
 
-	// If we found an existing connection, reuse it
-	if bestPubSub != nil {
+	// Reuse an existing connection only when every node in the shard already has
+	// at least one. Otherwise fall through to create a connection on a node that
+	// has none, spreading connections across the whole shard first.
+	if bestPubSub != nil && !hasUnconnectedNode {
 		p.addHashslotPubSub(hashslot, bestPubSub)
 		p.mu.Unlock()
 		return bestPubSub, nil
 	}
 
-	// No existing connections - pick the node with fewest connections
+	// Pick the node with fewest connections (0 for unconnected nodes)
 	minConns := math.MaxInt
 	for _, nodeAddr := range nodes {
 		if nodeConnCounts[nodeAddr] < minConns {

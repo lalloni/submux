@@ -69,6 +69,73 @@ func (ts *topologyState) update(slots []redis.ClusterSlot) {
 	}
 }
 
+// enrichWithReplicaInfo adds replica nodes to hashslotToNodes using CLUSTER NODES
+// output. This is necessary because CLUSTER SLOTS may not include replica information
+// (e.g. Redis 8+ only returns master nodes in CLUSTER SLOTS responses).
+//
+// The clusterNodesOutput parameter is the raw string from the CLUSTER NODES command.
+// Caller must hold ts.mu for writing (or call before the state is shared).
+func (ts *topologyState) enrichWithReplicaInfo(clusterNodesOutput string) {
+	// Parse CLUSTER NODES to build masterAddr -> []replicaAddr mapping.
+	// Format: <id> <ip:port@bus> <flags> <master-id> <ping> <pong> <epoch> <link> [slot...]
+	masterIDToAddr := make(map[string]string)
+	type replicaInfo struct {
+		addr     string
+		masterID string
+	}
+	var replicas []replicaInfo
+
+	for _, line := range strings.Split(clusterNodesOutput, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 8 {
+			continue
+		}
+		nodeID := fields[0]
+		addr := strings.Split(fields[1], "@")[0] // Strip bus port
+		flags := fields[2]
+		masterID := fields[3]
+
+		if strings.Contains(flags, "master") {
+			masterIDToAddr[nodeID] = addr
+		} else if strings.Contains(flags, "slave") || strings.Contains(flags, "replica") {
+			if !strings.Contains(flags, "fail") {
+				replicas = append(replicas, replicaInfo{addr: addr, masterID: masterID})
+			}
+		}
+	}
+
+	// Build masterAddr -> []replicaAddr
+	masterReplicas := make(map[string][]string)
+	for _, r := range replicas {
+		masterAddr, ok := masterIDToAddr[r.masterID]
+		if !ok {
+			continue
+		}
+		masterReplicas[masterAddr] = append(masterReplicas[masterAddr], r.addr)
+	}
+
+	// Enrich hashslotToNodes: for each hashslot whose node list only contains
+	// the master, append its replicas.
+	for hashslot, nodes := range ts.hashslotToNodes {
+		if len(nodes) == 0 {
+			continue
+		}
+		masterAddr := nodes[0]
+		replicaAddrs, ok := masterReplicas[masterAddr]
+		if !ok || len(replicaAddrs) == 0 {
+			continue
+		}
+		// Only enrich if replicas are missing (avoid duplicates on re-enrichment).
+		if len(nodes) == 1 {
+			ts.hashslotToNodes[hashslot] = append(nodes, replicaAddrs...)
+		}
+	}
+}
+
 // getNodeForHashslot returns the master node address that owns the given hashslot.
 func (ts *topologyState) getNodeForHashslot(hashslot int) (string, bool) {
 	ts.mu.RLock()
@@ -428,6 +495,18 @@ func (tm *topologyMonitor) refreshTopology() error {
 	// Create new state from current topology
 	newState := newTopologyState()
 	newState.update(slots)
+
+	// Enrich topology with replica info from CLUSTER NODES.
+	// CLUSTER SLOTS may omit replica nodes (Redis 8+ only returns masters),
+	// so we need CLUSTER NODES to discover the full shard membership.
+	nodesCtx, nodesCancel := context.WithTimeout(context.Background(), tm.pollInterval)
+	clusterNodesStr, nodesErr := tm.clusterClient.ClusterNodes(nodesCtx).Result()
+	nodesCancel()
+	if nodesErr == nil {
+		newState.enrichWithReplicaInfo(clusterNodesStr)
+	} else {
+		tm.config.logger.Warn("submux: CLUSTER NODES failed, replica info unavailable", "error", nodesErr)
+	}
 
 	// --- Swap phase (under lock) ---
 	tm.mu.Lock()

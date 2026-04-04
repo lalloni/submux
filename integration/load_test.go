@@ -125,7 +125,10 @@ func TestHighSubscriptionCount_MemoryUsage(t *testing.T) {
 
 	t.Logf("Memory allocated for %d subscriptions: %d KB (%.2f bytes/channel)", numChannels, allocDiffKB, float64(bytesPerChannel))
 
-	if allocDiff > 10*1024*1024 {
+	// 15 MB budget: ~1.5 KB/channel. BalancedAll creates one connection per node
+	// (9 for a 3-shard, 2-replica cluster) rather than per shard (3), adding
+	// ~2.5 MB of connection/event-loop overhead for the distribution benefit.
+	if allocDiff > 15*1024*1024 {
 		t.Errorf("Memory usage too high: %d KB for %d subscriptions", allocDiffKB, numChannels)
 	}
 }

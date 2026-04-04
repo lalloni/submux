@@ -1853,3 +1853,94 @@ func TestMigrationContextHeadroom_MinimumOneSecond(t *testing.T) {
 		})
 	}
 }
+
+func TestEnrichWithReplicaInfo(t *testing.T) {
+	ts := newTopologyState()
+
+	// Simulate CLUSTER SLOTS output: only masters (as returned by Redis 8+)
+	ts.hashslotToNode = map[int]string{
+		0:     "127.0.0.1:7000",
+		5461:  "127.0.0.1:7001",
+		10923: "127.0.0.1:7002",
+	}
+	ts.hashslotToNodes = map[int][]string{
+		0:     {"127.0.0.1:7000"},
+		5461:  {"127.0.0.1:7001"},
+		10923: {"127.0.0.1:7002"},
+	}
+
+	// Simulate CLUSTER NODES output with replicas
+	clusterNodes := `
+aaa 127.0.0.1:7000@17000 myself,master - 0 0 1 connected 0-5460
+bbb 127.0.0.1:7001@17001 master - 0 0 2 connected 5461-10922
+ccc 127.0.0.1:7002@17002 master - 0 0 3 connected 10923-16383
+ddd 127.0.0.1:7003@17003 slave aaa 0 0 1 connected
+eee 127.0.0.1:7004@17004 slave aaa 0 0 1 connected
+fff 127.0.0.1:7005@17005 slave bbb 0 0 2 connected
+ggg 127.0.0.1:7006@17006 slave ccc 0 0 3 connected
+hhh 127.0.0.1:7007@17007 slave ccc 0 0 3 connected
+`
+
+	ts.enrichWithReplicaInfo(clusterNodes)
+
+	tests := []struct {
+		hashslot     int
+		wantMaster   string
+		wantNumNodes int
+	}{
+		{0, "127.0.0.1:7000", 3},     // master + 2 replicas (7003, 7004)
+		{5461, "127.0.0.1:7001", 2},  // master + 1 replica (7005)
+		{10923, "127.0.0.1:7002", 3}, // master + 2 replicas (7006, 7007)
+	}
+
+	for _, tt := range tests {
+		nodes := ts.hashslotToNodes[tt.hashslot]
+		if len(nodes) != tt.wantNumNodes {
+			t.Errorf("hashslot %d: got %d nodes %v, want %d", tt.hashslot, len(nodes), nodes, tt.wantNumNodes)
+		}
+		if len(nodes) > 0 && nodes[0] != tt.wantMaster {
+			t.Errorf("hashslot %d: master = %q, want %q", tt.hashslot, nodes[0], tt.wantMaster)
+		}
+	}
+}
+
+func TestEnrichWithReplicaInfo_SkipsFailedReplicas(t *testing.T) {
+	ts := newTopologyState()
+	ts.hashslotToNodes = map[int][]string{
+		0: {"127.0.0.1:7000"},
+	}
+
+	clusterNodes := `
+aaa 127.0.0.1:7000@17000 master - 0 0 1 connected 0-16383
+bbb 127.0.0.1:7001@17001 slave,fail aaa 0 0 1 connected
+ccc 127.0.0.1:7002@17002 slave aaa 0 0 1 connected
+`
+
+	ts.enrichWithReplicaInfo(clusterNodes)
+
+	nodes := ts.hashslotToNodes[0]
+	if len(nodes) != 2 {
+		t.Errorf("got %d nodes %v, want 2 (master + 1 healthy replica)", len(nodes), nodes)
+	}
+}
+
+func TestEnrichWithReplicaInfo_NoDuplicateOnReEnrich(t *testing.T) {
+	ts := newTopologyState()
+	// Already has replicas (e.g. from a Redis version that includes them in CLUSTER SLOTS)
+	ts.hashslotToNodes = map[int][]string{
+		0: {"127.0.0.1:7000", "127.0.0.1:7001", "127.0.0.1:7002"},
+	}
+
+	clusterNodes := `
+aaa 127.0.0.1:7000@17000 master - 0 0 1 connected 0-16383
+bbb 127.0.0.1:7001@17001 slave aaa 0 0 1 connected
+ccc 127.0.0.1:7002@17002 slave aaa 0 0 1 connected
+`
+
+	ts.enrichWithReplicaInfo(clusterNodes)
+
+	nodes := ts.hashslotToNodes[0]
+	if len(nodes) != 3 {
+		t.Errorf("got %d nodes, want 3 (should not duplicate existing replicas)", len(nodes))
+	}
+}
