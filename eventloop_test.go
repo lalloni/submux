@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1567,5 +1568,70 @@ func TestRunEventLoop_NilOnEventLoopExit_NoPanic(t *testing.T) {
 		// No panic — success
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for event loop to exit")
+	}
+}
+
+func TestDispatchMessage_SkipsClosedSubscriptions(t *testing.T) {
+	var called atomic.Int32
+
+	wp := NewWorkerPool(2, 100)
+	wp.Start()
+	defer wp.Stop()
+
+	var wg sync.WaitGroup
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		nodeAddr:             "test:6379",
+		recorder:             &noopMetrics{},
+		workerPool:           wp,
+		lifecycleCtx:         context.Background(),
+		callbackWg:           &wg,
+		logger:               slog.Default(),
+	}
+
+	activeSub := &subscription{
+		channel:  "ch1",
+		subType:  subTypeSubscribe,
+		callback: func(ctx context.Context, msg *Message) { called.Add(1) },
+		state:    subStateActive,
+	}
+	activeSub.sequencer.maxQueueSize = 100
+
+	closedSub := &subscription{
+		channel:  "ch1",
+		subType:  subTypeSubscribe,
+		callback: func(ctx context.Context, msg *Message) { called.Add(1) },
+		state:    subStateClosed,
+	}
+	closedSub.sequencer.maxQueueSize = 100
+
+	failedSub := &subscription{
+		channel:  "ch1",
+		subType:  subTypeSubscribe,
+		callback: func(ctx context.Context, msg *Message) { called.Add(1) },
+		state:    subStateFailed,
+	}
+	failedSub.sequencer.maxQueueSize = 100
+
+	meta.addSubscription(activeSub)
+	meta.addSubscription(closedSub)
+	meta.addSubscription(failedSub)
+
+	msg := &Message{
+		Type:             MessageTypeMessage,
+		Channel:          "ch1",
+		Payload:          "hello",
+		Timestamp:        time.Now(),
+		SubscriptionType: subTypeSubscribe,
+	}
+
+	dispatchMessage(meta, "ch1", msg)
+
+	// Wait for worker pool to process
+	time.Sleep(50 * time.Millisecond)
+
+	if got := called.Load(); got != 1 {
+		t.Errorf("expected 1 callback (active only), got %d", got)
 	}
 }

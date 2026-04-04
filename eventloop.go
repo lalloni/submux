@@ -218,6 +218,9 @@ func dispatchMessage(meta *pubSubMetadata, lookupKey string, msg *Message) error
 	meta.recorder.recordMessageReceived(msg.SubscriptionType.String(), meta.nodeAddr)
 
 	for _, sub := range subs {
+		if state := sub.getState(); state == subStateClosed || state == subStateFailed {
+			continue
+		}
 		invokeCallbackOrdered(meta.lifecycleCtx, meta.logger, meta.recorder, meta.workerPool, meta.callbackWg, sub, msg)
 	}
 	return nil
