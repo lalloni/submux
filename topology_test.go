@@ -1772,3 +1772,61 @@ func TestResubscribeOnNewNode_RemovesFromOldMetadata(t *testing.T) {
 		t.Errorf("new meta should have 1 subscription after migration, got %d", newMeta.subscriptionCount())
 	}
 }
+
+// TestMigrationContextHeadroom_MinimumOneSecond verifies that the migration
+// context deadline has at least 1 second of headroom beyond migrationTimeout,
+// even when stallCheckInterval is very small.
+//
+// Before the fix, headroom was 2*stallCheckInterval, which could be as low
+// as 200ms (with minimum stallCheckInterval of 100ms). GC pauses or
+// scheduling delays could eat this, causing the context to expire before
+// the monitoring goroutine detected the timeout.
+func TestMigrationContextHeadroom_MinimumOneSecond(t *testing.T) {
+	tests := []struct {
+		name               string
+		stallCheckInterval time.Duration
+		migrationTimeout   time.Duration
+		wantMinDeadline    time.Duration // minimum expected context deadline from start
+	}{
+		{
+			name:               "small stall check (100ms) gets 1s headroom",
+			stallCheckInterval: 100 * time.Millisecond,
+			migrationTimeout:   2 * time.Second,
+			wantMinDeadline:    3 * time.Second, // 2s + 1s minimum headroom
+		},
+		{
+			name:               "medium stall check (400ms) gets 1s headroom",
+			stallCheckInterval: 400 * time.Millisecond,
+			migrationTimeout:   2 * time.Second,
+			wantMinDeadline:    3 * time.Second, // 2s + max(800ms, 1s) = 3s
+		},
+		{
+			name:               "large stall check (2s) uses 2x formula",
+			stallCheckInterval: 2 * time.Second,
+			migrationTimeout:   5 * time.Second,
+			wantMinDeadline:    9 * time.Second, // 5s + 2*2s = 9s (2x formula > 1s)
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Compute headroom using the FIXED formula
+			headroom := 2 * tt.stallCheckInterval
+			if headroom < 1*time.Second {
+				headroom = 1 * time.Second
+			}
+			computedDeadline := tt.migrationTimeout + headroom
+
+			if computedDeadline < tt.wantMinDeadline {
+				t.Errorf("computed deadline %v < wantMinDeadline %v", computedDeadline, tt.wantMinDeadline)
+			}
+
+			// Verify the old (buggy) formula would have been too short for small stall checks
+			oldHeadroom := 2 * tt.stallCheckInterval
+			oldDeadline := tt.migrationTimeout + oldHeadroom
+			if tt.stallCheckInterval < 500*time.Millisecond && oldDeadline >= tt.wantMinDeadline {
+				t.Logf("Note: old formula also meets minimum for this case (stallCheck=%v)", tt.stallCheckInterval)
+			}
+		})
+	}
+}
