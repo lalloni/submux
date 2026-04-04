@@ -167,9 +167,9 @@ func (ts *topologyState) getAnySlotForNode(nodeAddr string) (int, bool) {
 // getAnySlotForNode returns any hashslot owned by the given node from the topology monitor.
 func (tm *topologyMonitor) getAnySlotForNode(nodeAddr string) (int, bool) {
 	// Copy state reference under lock to avoid nested lock acquisition
-	tm.mu.Lock()
+	tm.mu.RLock()
 	state := tm.currentState
-	tm.mu.Unlock()
+	tm.mu.RUnlock()
 
 	if state == nil {
 		return 0, false
