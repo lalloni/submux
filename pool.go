@@ -836,30 +836,40 @@ func (p *pubSubPool) removePubSub(pubsub *redis.PubSub) {
 
 // closeAll closes all PubSub connections in the pool.
 func (p *pubSubPool) closeAll() error {
+	// Collect all connections under lock, then release before closing.
+	// This avoids holding p.mu during meta.close() → wg.Wait(), which
+	// could block metrics callbacks that need p.mu.RLock().
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	var firstErr error
+	type connEntry struct {
+		pubsub *redis.PubSub
+		meta   *pubSubMetadata
+	}
+	var entries []connEntry
 	for _, pubsubs := range p.nodePubSubs {
 		for _, pubsub := range pubsubs {
-			meta := p.pubSubMetadata[pubsub]
-			if meta != nil {
-				// Close metadata (stops goroutines)
-				if err := meta.close(); err != nil && firstErr == nil {
-					firstErr = err
-				}
-			}
-			// Close PubSub
-			if err := pubsub.Close(); err != nil && firstErr == nil {
-				firstErr = err
-			}
+			entries = append(entries, connEntry{pubsub: pubsub, meta: p.pubSubMetadata[pubsub]})
 		}
 	}
 
+	// Clear maps immediately so new operations see an empty pool
 	p.nodePubSubs = make(map[string][]*redis.PubSub)
 	p.hashslotPubSubs = make(map[int][]*redis.PubSub)
 	p.pubSubMetadata = make(map[*redis.PubSub]*pubSubMetadata)
 	p.pendingConnections = make(map[string]*pendingConnectionResult)
+	p.mu.Unlock()
+
+	// Close connections without holding the pool lock
+	var firstErr error
+	for _, entry := range entries {
+		if entry.meta != nil {
+			if err := entry.meta.close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		if err := entry.pubsub.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 
 	return firstErr
 }
