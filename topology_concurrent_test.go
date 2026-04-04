@@ -349,3 +349,66 @@ func TestResubscribeOnNewNode_StalePubSubReference(t *testing.T) {
 		t.Errorf("subscription still in oldMeta after migration: count=%d, want 0 (TOCTOU race — issue #6)", len(oldSubs))
 	}
 }
+
+// TestResubscription_CleanupRaceWithConnectionFailure verifies that
+// resubscribeOnNewNode correctly removes the subscription from old metadata
+// even when the old connection transitions to connStateFailed concurrently.
+//
+// Before the fix, the code checked oldMeta.getState() == connStateActive
+// before calling removeSubscription. If the connection failed between the
+// check and the remove, both resubscribeOnNewNode and onEventLoopExit
+// would race on the subscription map.
+func TestResubscription_CleanupRaceWithConnectionFailure(t *testing.T) {
+	f := newMigrationTestFixture(t)
+
+	migration := hashslotMigration{
+		hashslot: f.hashslot,
+		oldNode:  "nodeA:7000",
+		newNode:  "nodeB:7000",
+	}
+
+	// Verify subscription starts on oldMeta
+	if count := f.oldMeta.subscriptionCount(); count != 1 {
+		t.Fatalf("oldMeta subscription count = %d, want 1", count)
+	}
+
+	var wg sync.WaitGroup
+	var processedCount atomic.Int64
+	var innerWg sync.WaitGroup
+
+	// Run resubscribeOnNewNode and concurrently fail the old connection
+	var barrier sync.WaitGroup
+	barrier.Add(1)
+
+	// Goroutine A: transition oldMeta to connStateFailed and remove subscription
+	// (simulating what onEventLoopExit does)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		barrier.Wait()
+		f.oldMeta.setState(connStateFailed)
+		f.oldMeta.removeSubscription(f.sub)
+	}()
+
+	// Goroutine B: run resubscribeOnNewNode
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		barrier.Wait()
+		ctx := context.Background()
+		f.tm.resubscribeOnNewNode(ctx, []*subscription{f.sub}, migration, &processedCount, &innerWg)
+		innerWg.Wait()
+	}()
+
+	// Release both goroutines simultaneously
+	barrier.Done()
+	wg.Wait()
+
+	// Key assertion: subscription must be removed from oldMeta regardless of
+	// the race outcome. Before the fix, if oldMeta.getState() returned
+	// connStateFailed, the subscription might not be removed by resubscribeOnNewNode.
+	oldCount := f.oldMeta.subscriptionCount()
+	if oldCount != 0 {
+		t.Errorf("oldMeta subscription count = %d, want 0 (subscription should be removed regardless of connection state)", oldCount)
+	}
+}
