@@ -361,24 +361,16 @@ func (tm *topologyMonitor) refreshTopology() error {
 		})
 
 		for _, addr := range addrs {
-			// Create a temporary client for this node
-			// Copy relevant options
-			nodeOpts := &redis.Options{
-				Addr:                  addr,
-				ClientName:            opts.ClientName,
-				Dialer:                opts.Dialer,
-				OnConnect:             opts.OnConnect,
-				Username:              opts.Username,
-				Password:              opts.Password,
-				ContextTimeoutEnabled: opts.ContextTimeoutEnabled,
-				PoolSize:              1, // We only need one connection
-				MinIdleConns:          0,
-				MaxRetries:            1,
-				DialTimeout:           1 * time.Second,
-				ReadTimeout:           1 * time.Second,
-				WriteTimeout:          1 * time.Second,
-				TLSConfig:             opts.TLSConfig,
-			}
+			// Create a temporary client for this node with connection-level
+			// options cascaded from the ClusterClient (see ADR-003).
+			nodeOpts := clusterOptionsToNodeOptions(opts, addr)
+			// Override for short-lived topology query client.
+			nodeOpts.PoolSize = 1
+			nodeOpts.MinIdleConns = 0
+			nodeOpts.MaxRetries = 1
+			nodeOpts.DialTimeout = 1 * time.Second
+			nodeOpts.ReadTimeout = 1 * time.Second
+			nodeOpts.WriteTimeout = 1 * time.Second
 
 			nodeClient := redis.NewClient(nodeOpts)
 

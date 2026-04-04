@@ -648,7 +648,13 @@ func (p *pubSubPool) createPubSubToNode(ctx context.Context, nodeAddr string) (*
 	// its internal slot map, which may be stale after migrations — causing the
 	// PubSub to connect to the wrong node and subsequent SSUBSCRIBE commands to
 	// fail with MOVED errors.
-	directClient := redis.NewClient(&redis.Options{Addr: nodeAddr})
+	//
+	// Connection-level options (auth, TLS, timeouts, etc.) are cascaded from
+	// the ClusterClient so PubSub connections work on authenticated/TLS clusters.
+	// See ADR-003.
+	clusterOpts := p.clusterClient.Options()
+	nodeOpts := clusterOptionsToNodeOptions(clusterOpts, nodeAddr)
+	directClient := redis.NewClient(nodeOpts)
 	pubsub := directClient.Subscribe(ctx)
 
 	// Get worker pool and lifecycle context from SubMux
@@ -895,4 +901,51 @@ func (p *pubSubPool) redisSubscriptionCount() int {
 		count += meta.subscriptionCount()
 	}
 	return count
+}
+
+// clusterOptionsToNodeOptions creates redis.Options for a direct node connection,
+// copying connection-level fields from ClusterOptions. Pool-specific fields
+// (PoolSize, MinIdleConns, etc.) are left at go-redis defaults since each call
+// site has different requirements. Callers may override fields after calling.
+//
+// Maintained against go-redis v9.17.2 — review when upgrading.
+func clusterOptionsToNodeOptions(clusterOpts *redis.ClusterOptions, addr string) *redis.Options {
+	return &redis.Options{
+		Addr: addr,
+
+		// Auth
+		Username:                     clusterOpts.Username,
+		Password:                     clusterOpts.Password,
+		CredentialsProvider:          clusterOpts.CredentialsProvider,
+		CredentialsProviderContext:   clusterOpts.CredentialsProviderContext,
+		StreamingCredentialsProvider: clusterOpts.StreamingCredentialsProvider,
+
+		// TLS/Connection
+		TLSConfig:  clusterOpts.TLSConfig,
+		Dialer:     clusterOpts.Dialer,
+		OnConnect:  clusterOpts.OnConnect,
+		ClientName: clusterOpts.ClientName,
+
+		// Protocol
+		Protocol:              clusterOpts.Protocol,
+		ContextTimeoutEnabled: clusterOpts.ContextTimeoutEnabled,
+
+		// Timeouts
+		DialTimeout:  clusterOpts.DialTimeout,
+		ReadTimeout:  clusterOpts.ReadTimeout,
+		WriteTimeout: clusterOpts.WriteTimeout,
+
+		// Identity
+		DisableIdentity: clusterOpts.DisableIdentity,
+		IdentitySuffix:  clusterOpts.IdentitySuffix,
+
+		// Retry
+		MaxRetries:      clusterOpts.MaxRetries,
+		MinRetryBackoff: clusterOpts.MinRetryBackoff,
+		MaxRetryBackoff: clusterOpts.MaxRetryBackoff,
+
+		// Buffers
+		ReadBufferSize:  clusterOpts.ReadBufferSize,
+		WriteBufferSize: clusterOpts.WriteBufferSize,
+	}
 }

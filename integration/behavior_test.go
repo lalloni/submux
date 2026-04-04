@@ -416,21 +416,22 @@ func TestMigrationTimeoutSignal(t *testing.T) {
 	cluster := startTestClusterNoReplicas(t)
 	pubClient := cluster.GetClusterClient()
 
-	// Short ReadTimeout (500ms) so topology polls fail fast when routed to the
-	// paused node. stallCheck (1100ms) > migrationTimeout (1s): at the first tick
-	// (~1.1s), elapsed > timeout → timeout signal fires before the stall check.
-	// ReadTimeout < stallCheck is safe here because the resubscription to the
-	// paused node hangs on the TCP read (SIGSTOP keeps connection open), and the
-	// PubSub reader retries on timeout without closing the connection.
+	// ReadTimeout (2s) > migrationTimeout (1s) so the resubscription to the
+	// paused node hangs on the TCP read (SIGSTOP keeps connection open and the
+	// kernel accepts new connections) long enough for the monitoring ticker to
+	// detect the timeout. stallCheck (1100ms) > migrationTimeout (1s): at the
+	// first tick (~1.1s), elapsed > timeout → timeout signal fires before the
+	// stall check. Note: these timeouts cascade to direct PubSub connections
+	// via clusterOptionsToNodeOptions (ADR-003).
 	addrs := make([]string, len(cluster.nodes))
 	for i, node := range cluster.nodes {
 		addrs[i] = node.Address
 	}
 	submuxClient := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs:        addrs,
-		DialTimeout:  500 * time.Millisecond,
-		ReadTimeout:  500 * time.Millisecond,
-		WriteTimeout: 500 * time.Millisecond,
+		DialTimeout:  2 * time.Second,
+		ReadTimeout:  2 * time.Second,
+		WriteTimeout: 2 * time.Second,
 	})
 	t.Cleanup(func() { submuxClient.Close() })
 
@@ -501,8 +502,8 @@ func TestMigrationTimeoutSignal(t *testing.T) {
 
 	// Pause the target node immediately after migration. The resubscription
 	// attempt will connect to the paused node — TCP succeeds (kernel level) but
-	// reads hang for ReadTimeout (5s), keeping the resubscription in-flight long
-	// enough for the monitoring ticker (2s) to fire and detect the timeout (1s).
+	// reads hang for ReadTimeout (2s), keeping the resubscription in-flight long
+	// enough for the monitoring ticker (1.1s) to fire and detect the timeout (1s).
 	t.Logf("Pausing target node %s", targetNode)
 	err = cluster.PauseNode(targetNode)
 	if err != nil {
@@ -547,19 +548,20 @@ func TestMigrationStalledSignal(t *testing.T) {
 	cluster := startTestClusterNoReplicas(t)
 	pubClient := cluster.GetClusterClient()
 
-	// Short ReadTimeout (500ms) so topology polls fail fast. stallCheck (100ms)
-	// fires well before migrationTimeout (30s). The PubSub reader retries on
-	// ReadTimeout without closing the connection, so the resubscription to the
-	// paused node stays in-flight across multiple read attempts.
+	// ReadTimeout (2s) > stallCheck (100ms) so the resubscription to the paused
+	// node hangs long enough for the stall check to detect lack of progress.
+	// stallCheck (100ms) fires well before migrationTimeout (30s). Note: these
+	// timeouts cascade to direct PubSub connections via clusterOptionsToNodeOptions
+	// (ADR-003).
 	addrs := make([]string, len(cluster.nodes))
 	for i, node := range cluster.nodes {
 		addrs[i] = node.Address
 	}
 	submuxClient := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs:        addrs,
-		DialTimeout:  500 * time.Millisecond,
-		ReadTimeout:  500 * time.Millisecond,
-		WriteTimeout: 500 * time.Millisecond,
+		DialTimeout:  2 * time.Second,
+		ReadTimeout:  2 * time.Second,
+		WriteTimeout: 2 * time.Second,
 	})
 	t.Cleanup(func() { submuxClient.Close() })
 

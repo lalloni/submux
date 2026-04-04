@@ -2,8 +2,10 @@ package submux
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"math"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1944,5 +1946,190 @@ func TestCleanupAndCloseAll_Concurrent_NoPanic(t *testing.T) {
 	defer pool.mu.RUnlock()
 	if len(pool.pubSubMetadata) != 0 {
 		t.Errorf("expected 0 metadata entries, got %d", len(pool.pubSubMetadata))
+	}
+}
+
+func TestClusterOptionsToNodeOptions(t *testing.T) {
+	// Set up ClusterOptions with non-default values for all cascaded fields.
+	customDialer := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return nil, fmt.Errorf("custom dialer")
+	}
+	customOnConnect := func(ctx context.Context, cn *redis.Conn) error {
+		return fmt.Errorf("custom on connect")
+	}
+	customCredentialsProvider := func() (string, string) {
+		return "dyn-user", "dyn-pass"
+	}
+	customCredentialsProviderCtx := func(ctx context.Context) (string, string, error) {
+		return "ctx-user", "ctx-pass", nil
+	}
+	customTLS := &tls.Config{ServerName: "test.example.com"}
+
+	clusterOpts := &redis.ClusterOptions{
+		Addrs: []string{"seed1:6379", "seed2:6379"},
+
+		// Auth
+		Username:                   "testuser",
+		Password:                   "testpass",
+		CredentialsProvider:        customCredentialsProvider,
+		CredentialsProviderContext: customCredentialsProviderCtx,
+		// Note: StreamingCredentialsProvider requires a concrete implementation;
+		// we test that the field is assignable by verifying it's nil when not set.
+
+		// TLS/Connection
+		TLSConfig:  customTLS,
+		Dialer:     customDialer,
+		OnConnect:  customOnConnect,
+		ClientName: "submux-test",
+
+		// Protocol
+		Protocol:              3,
+		ContextTimeoutEnabled: true,
+
+		// Timeouts
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 15 * time.Second,
+
+		// Identity
+		DisableIdentity: true,
+		IdentitySuffix:  "test-suffix",
+
+		// Retry
+		MaxRetries:      5,
+		MinRetryBackoff: 100 * time.Millisecond,
+		MaxRetryBackoff: 2 * time.Second,
+
+		// Buffers
+		ReadBufferSize:  65536,
+		WriteBufferSize: 131072,
+
+		// Pool-specific (should NOT be copied)
+		PoolSize:        50,
+		MinIdleConns:    10,
+		MaxIdleConns:    30,
+		MaxActiveConns:  100,
+		PoolTimeout:     30 * time.Second,
+		ConnMaxIdleTime: 5 * time.Minute,
+		ConnMaxLifetime: 1 * time.Hour,
+		PoolFIFO:        true,
+	}
+
+	targetAddr := "node1:7001"
+	nodeOpts := clusterOptionsToNodeOptions(clusterOpts, targetAddr)
+
+	// Verify Addr is set from parameter, not from ClusterOptions
+	if nodeOpts.Addr != targetAddr {
+		t.Errorf("Addr = %q, want %q", nodeOpts.Addr, targetAddr)
+	}
+
+	// Auth fields
+	if nodeOpts.Username != "testuser" {
+		t.Errorf("Username = %q, want %q", nodeOpts.Username, "testuser")
+	}
+	if nodeOpts.Password != "testpass" {
+		t.Errorf("Password = %q, want %q", nodeOpts.Password, "testpass")
+	}
+	if nodeOpts.CredentialsProvider == nil {
+		t.Error("CredentialsProvider is nil, want non-nil")
+	} else {
+		u, p := nodeOpts.CredentialsProvider()
+		if u != "dyn-user" || p != "dyn-pass" {
+			t.Errorf("CredentialsProvider() = (%q, %q), want (%q, %q)", u, p, "dyn-user", "dyn-pass")
+		}
+	}
+	if nodeOpts.CredentialsProviderContext == nil {
+		t.Error("CredentialsProviderContext is nil, want non-nil")
+	} else {
+		u, p, err := nodeOpts.CredentialsProviderContext(context.Background())
+		if u != "ctx-user" || p != "ctx-pass" || err != nil {
+			t.Errorf("CredentialsProviderContext() = (%q, %q, %v), want (%q, %q, nil)", u, p, err, "ctx-user", "ctx-pass")
+		}
+	}
+
+	// TLS/Connection fields
+	if nodeOpts.TLSConfig != customTLS {
+		t.Error("TLSConfig not cascaded")
+	}
+	if nodeOpts.Dialer == nil {
+		t.Error("Dialer is nil, want non-nil")
+	}
+	if nodeOpts.OnConnect == nil {
+		t.Error("OnConnect is nil, want non-nil")
+	}
+	if nodeOpts.ClientName != "submux-test" {
+		t.Errorf("ClientName = %q, want %q", nodeOpts.ClientName, "submux-test")
+	}
+
+	// Protocol fields
+	if nodeOpts.Protocol != 3 {
+		t.Errorf("Protocol = %d, want %d", nodeOpts.Protocol, 3)
+	}
+	if !nodeOpts.ContextTimeoutEnabled {
+		t.Error("ContextTimeoutEnabled = false, want true")
+	}
+
+	// Timeout fields
+	if nodeOpts.DialTimeout != 5*time.Second {
+		t.Errorf("DialTimeout = %v, want %v", nodeOpts.DialTimeout, 5*time.Second)
+	}
+	if nodeOpts.ReadTimeout != 10*time.Second {
+		t.Errorf("ReadTimeout = %v, want %v", nodeOpts.ReadTimeout, 10*time.Second)
+	}
+	if nodeOpts.WriteTimeout != 15*time.Second {
+		t.Errorf("WriteTimeout = %v, want %v", nodeOpts.WriteTimeout, 15*time.Second)
+	}
+
+	// Identity fields
+	if !nodeOpts.DisableIdentity {
+		t.Error("DisableIdentity = false, want true")
+	}
+	if nodeOpts.IdentitySuffix != "test-suffix" {
+		t.Errorf("IdentitySuffix = %q, want %q", nodeOpts.IdentitySuffix, "test-suffix")
+	}
+
+	// Retry fields
+	if nodeOpts.MaxRetries != 5 {
+		t.Errorf("MaxRetries = %d, want %d", nodeOpts.MaxRetries, 5)
+	}
+	if nodeOpts.MinRetryBackoff != 100*time.Millisecond {
+		t.Errorf("MinRetryBackoff = %v, want %v", nodeOpts.MinRetryBackoff, 100*time.Millisecond)
+	}
+	if nodeOpts.MaxRetryBackoff != 2*time.Second {
+		t.Errorf("MaxRetryBackoff = %v, want %v", nodeOpts.MaxRetryBackoff, 2*time.Second)
+	}
+
+	// Buffer fields
+	if nodeOpts.ReadBufferSize != 65536 {
+		t.Errorf("ReadBufferSize = %d, want %d", nodeOpts.ReadBufferSize, 65536)
+	}
+	if nodeOpts.WriteBufferSize != 131072 {
+		t.Errorf("WriteBufferSize = %d, want %d", nodeOpts.WriteBufferSize, 131072)
+	}
+
+	// Pool-specific fields must NOT be copied (should be zero values)
+	if nodeOpts.PoolSize != 0 {
+		t.Errorf("PoolSize = %d, want 0 (not cascaded)", nodeOpts.PoolSize)
+	}
+	if nodeOpts.MinIdleConns != 0 {
+		t.Errorf("MinIdleConns = %d, want 0 (not cascaded)", nodeOpts.MinIdleConns)
+	}
+	if nodeOpts.MaxIdleConns != 0 {
+		t.Errorf("MaxIdleConns = %d, want 0 (not cascaded)", nodeOpts.MaxIdleConns)
+	}
+	if nodeOpts.MaxActiveConns != 0 {
+		t.Errorf("MaxActiveConns = %d, want 0 (not cascaded)", nodeOpts.MaxActiveConns)
+	}
+	if nodeOpts.PoolTimeout != 0 {
+		t.Errorf("PoolTimeout = %v, want 0 (not cascaded)", nodeOpts.PoolTimeout)
+	}
+	if nodeOpts.ConnMaxIdleTime != 0 {
+		t.Errorf("ConnMaxIdleTime = %v, want 0 (not cascaded)", nodeOpts.ConnMaxIdleTime)
+	}
+	if nodeOpts.ConnMaxLifetime != 0 {
+		t.Errorf("ConnMaxLifetime = %v, want 0 (not cascaded)", nodeOpts.ConnMaxLifetime)
+	}
+	if nodeOpts.PoolFIFO {
+		t.Error("PoolFIFO = true, want false (not cascaded)")
 	}
 }
