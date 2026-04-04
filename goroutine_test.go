@@ -193,7 +193,7 @@ func TestFailedConnection_NoGoroutineLeak(t *testing.T) {
 
 		meta.cmdCh <- &command{
 			cmd:      cmdSubscribe,
-			args:     []any{fmt.Sprintf("ch-%d", i)},
+			args:     []string{fmt.Sprintf("ch-%d", i)},
 			response: make(chan error, 1),
 		}
 

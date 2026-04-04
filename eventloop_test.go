@@ -848,7 +848,7 @@ func TestRunEventLoop_CommandError_SetsFailedState(t *testing.T) {
 	responseCh := make(chan error, 1)
 	cmd := &command{
 		cmd:      cmdSubscribe,
-		args:     []any{"test-channel"},
+		args:     []string{"test-channel"},
 		sub:      sub,
 		response: responseCh,
 	}
@@ -954,7 +954,7 @@ func TestRunEventLoop_CommandError_NotifiesExistingSubscriptions(t *testing.T) {
 	responseCh := make(chan error, 1)
 	cmd := &command{
 		cmd:      cmdSubscribe,
-		args:     []any{"new-channel"},
+		args:     []string{"new-channel"},
 		sub:      pendingSub,
 		response: responseCh,
 	}
@@ -1044,7 +1044,7 @@ func TestRunEventLoop_CommandError_NilResponse(t *testing.T) {
 	// Send a command with nil response channel
 	cmd := &command{
 		cmd:      cmdSubscribe,
-		args:     []any{"test-channel"},
+		args:     []string{"test-channel"},
 		sub:      nil,
 		response: nil, // nil response channel
 	}
@@ -1104,7 +1104,7 @@ func TestSendRedisCommand_AllCommandTypes(t *testing.T) {
 			cmd := &command{
 				ctx:  context.Background(),
 				cmd:  tt.cmdType,
-				args: []any{"test-channel"},
+				args: []string{"test-channel"},
 			}
 
 			// All commands will fail due to invalid connection, but
@@ -1137,7 +1137,7 @@ func TestSendRedisCommand_UnknownCommand(t *testing.T) {
 	cmd := &command{
 		ctx:  context.Background(),
 		cmd:  "INVALID_COMMAND",
-		args: []any{"test-channel"},
+		args: []string{"test-channel"},
 	}
 
 	err := sendRedisCommand(meta, cmd)
@@ -1172,7 +1172,7 @@ func TestSendRedisCommand_RedirectDetection(t *testing.T) {
 	cmd := &command{
 		ctx:  context.Background(),
 		cmd:  cmdSubscribe,
-		args: []any{"test-channel"},
+		args: []string{"test-channel"},
 	}
 
 	// This will error (connection failure, not redirect)
@@ -1306,7 +1306,7 @@ func TestSendCommand_AfterClose_NoPanic(t *testing.T) {
 	cmd := &command{
 		ctx:      context.Background(),
 		cmd:      cmdSubscribe,
-		args:     []any{"test"},
+		args:     []string{"test"},
 		response: make(chan error, 1),
 	}
 	meta.sendCommand(context.Background(), cmd)
@@ -1340,7 +1340,7 @@ func TestSendCommand_ConcurrentWithClose_NoPanic(t *testing.T) {
 				cmd := &command{
 					ctx:      context.Background(),
 					cmd:      cmdSubscribe,
-					args:     []any{"test"},
+					args:     []string{"test"},
 					response: make(chan error, 1),
 				}
 				meta.sendCommand(context.Background(), cmd)
@@ -1359,7 +1359,7 @@ func TestDrainCmdCh_SendsErrorsToAllPending(t *testing.T) {
 		cmds[i] = &command{
 			ctx:      context.Background(),
 			cmd:      cmdSubscribe,
-			args:     []any{"test"},
+			args:     []string{"test"},
 			response: make(chan error, 1),
 		}
 		meta.cmdCh <- cmds[i]
@@ -1394,7 +1394,7 @@ func TestDrainCmdCh_SkipsNilCommands(t *testing.T) {
 	cmd := &command{
 		ctx:      context.Background(),
 		cmd:      cmdSubscribe,
-		args:     []any{"test"},
+		args:     []string{"test"},
 		response: make(chan error, 1),
 	}
 	meta.cmdCh <- cmd
@@ -1418,7 +1418,7 @@ func TestDrainCmdCh_SkipsNilResponse(t *testing.T) {
 	meta.cmdCh <- &command{
 		ctx:  context.Background(),
 		cmd:  cmdSubscribe,
-		args: []any{"test"},
+		args: []string{"test"},
 	}
 
 	drainCmdCh(meta) // should not panic
@@ -1439,7 +1439,7 @@ func TestSendCommand_RejectsAfterLoopDone(t *testing.T) {
 	cmd := &command{
 		ctx:      context.Background(),
 		cmd:      cmdSubscribe,
-		args:     []any{"test"},
+		args:     []string{"test"},
 		response: make(chan error, 1),
 	}
 
@@ -1481,7 +1481,7 @@ func TestRunEventLoop_CallsOnEventLoopExit_OnFailure(t *testing.T) {
 	// Trigger failure via invalid connection
 	meta.cmdCh <- &command{
 		cmd:      cmdSubscribe,
-		args:     []any{"ch"},
+		args:     []string{"ch"},
 		response: make(chan error, 1),
 	}
 

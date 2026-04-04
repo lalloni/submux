@@ -153,7 +153,7 @@ func TestPubSubMetadata_SendCommand(t *testing.T) {
 
 	cmd := &command{
 		cmd:      cmdSubscribe,
-		args:     []any{"channel1"},
+		args:     []string{"channel1"},
 		response: make(chan error, 1),
 	}
 
@@ -189,7 +189,7 @@ func TestPubSubMetadata_SendCommand_Closed(t *testing.T) {
 	// Fill the channel to force blocking on cmdCh
 	blockingCmd := &command{
 		cmd:      "BLOCK",
-		args:     []any{},
+		args:     []string{},
 		response: make(chan error, 1),
 	}
 	meta.cmdCh <- blockingCmd
@@ -199,7 +199,7 @@ func TestPubSubMetadata_SendCommand_Closed(t *testing.T) {
 
 	cmd := &command{
 		cmd:      cmdSubscribe,
-		args:     []any{"channel1"},
+		args:     []string{"channel1"},
 		response: make(chan error, 1),
 	}
 
@@ -233,14 +233,14 @@ func TestPubSubMetadata_SendCommand_ContextCancellation(t *testing.T) {
 	// Fill the channel to force blocking
 	blockingCmd := &command{
 		cmd:      "BLOCK",
-		args:     []any{},
+		args:     []string{},
 		response: make(chan error, 1),
 	}
 	meta.cmdCh <- blockingCmd
 
 	cmd := &command{
 		cmd:      cmdSubscribe,
-		args:     []any{"channel1"},
+		args:     []string{"channel1"},
 		response: make(chan error, 1),
 	}
 
@@ -980,7 +980,7 @@ func TestPubSubMetadata_SendCommandWithZeroBufferChannel(t *testing.T) {
 
 	cmd := &command{
 		cmd:      cmdSubscribe,
-		args:     []any{"channel1"},
+		args:     []string{"channel1"},
 		response: make(chan error, 1),
 	}
 
@@ -1410,7 +1410,7 @@ func TestPubSubMetadata_SendCommand_ClosedDoneChannel(t *testing.T) {
 
 	cmd := &command{
 		cmd:      cmdSubscribe,
-		args:     []any{"test-channel"},
+		args:     []string{"test-channel"},
 		response: make(chan error, 1),
 	}
 
@@ -1438,7 +1438,7 @@ func TestPubSubMetadata_SendCommand_ContextTimeout(t *testing.T) {
 
 	cmd := &command{
 		cmd:      cmdSubscribe,
-		args:     []any{"test-channel"},
+		args:     []string{"test-channel"},
 		response: make(chan error, 1),
 	}
 

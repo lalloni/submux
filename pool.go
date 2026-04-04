@@ -48,7 +48,7 @@ const (
 type command struct {
 	ctx      context.Context // carries caller context across the cmdCh channel boundary
 	cmd      string
-	args     []any
+	args     []string
 	sub      *subscription
 	response chan error
 }

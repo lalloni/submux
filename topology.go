@@ -901,7 +901,7 @@ func (tm *topologyMonitor) resubscribeOnNewNode(ctx context.Context, subs []*sub
 						cmd := &command{
 							ctx:      cmdCtx,
 							cmd:      cName,
-							args:     []any{chName},
+							args:     []string{chName},
 							sub:      s,
 							response: make(chan error, 1),
 						}

@@ -97,11 +97,7 @@ func sendRedisCommand(meta *pubSubMetadata, cmd *command) error {
 		ctx = context.Background()
 	}
 
-	// Convert []any to []string
-	args := make([]string, len(cmd.args))
-	for i, arg := range cmd.args {
-		args[i] = arg.(string)
-	}
+	args := cmd.args
 
 	var err error
 	switch cmd.cmd {

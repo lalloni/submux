@@ -404,7 +404,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 		cmd := &command{
 			ctx:      ctx,
 			cmd:      cmdName,
-			args:     []any{channel},
+			args:     []string{channel},
 			sub:      sub,
 			response: make(chan error, 1),
 		}
@@ -585,7 +585,7 @@ func (sm *SubMux) unsubscribeSubscription(ctx context.Context, sub *Sub) error {
 			cmd := &command{
 				ctx:      context.Background(),
 				cmd:      cmdName,
-				args:     []any{channel},
+				args:     []string{channel},
 				sub:      firstSub,
 				response: make(chan error, 1),
 			}
