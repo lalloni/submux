@@ -869,6 +869,13 @@ func (tm *topologyMonitor) resubscribeOnNewNode(ctx context.Context, subs []*sub
 				isFirstOnNewPubSub := len(existingSubs) == 1
 
 				if isFirstOnNewPubSub {
+					// Check context before spawning goroutine to avoid a goroutine
+					// storm when the migration context has already been cancelled.
+					if ctx.Err() != nil {
+						processedCount.Add(1)
+						continue
+					}
+
 					// Prepare for resubscription: drain any stale confirmation
 					// from a previous subscribe cycle and mark as pending.
 					sub.resetConfirmation()
