@@ -346,7 +346,7 @@ func (m *otelMetrics) recordTopologyRefresh(success bool) {
 
 func (m *otelMetrics) recordCallbackLatency(subType string, duration time.Duration) {
 	if m.callbackLatency != nil {
-		ms := float64(duration.Milliseconds())
+		ms := duration.Seconds() * 1000
 		m.callbackLatency.Record(context.Background(), ms,
 			metric.WithAttributes(
 				attribute.String("subscription_type", subType),
@@ -356,7 +356,7 @@ func (m *otelMetrics) recordCallbackLatency(subType string, duration time.Durati
 
 func (m *otelMetrics) recordMessageLatency(subType string, duration time.Duration) {
 	if m.messageLatency != nil {
-		ms := float64(duration.Milliseconds())
+		ms := duration.Seconds() * 1000
 		m.messageLatency.Record(context.Background(), ms,
 			metric.WithAttributes(
 				attribute.String("subscription_type", subType),
@@ -366,14 +366,14 @@ func (m *otelMetrics) recordMessageLatency(subType string, duration time.Duratio
 
 func (m *otelMetrics) recordMigrationDuration(duration time.Duration) {
 	if m.migrationDuration != nil {
-		ms := float64(duration.Milliseconds())
+		ms := duration.Seconds() * 1000
 		m.migrationDuration.Record(context.Background(), ms)
 	}
 }
 
 func (m *otelMetrics) recordTopologyRefreshLatency(duration time.Duration) {
 	if m.topologyRefreshLatency != nil {
-		ms := float64(duration.Milliseconds())
+		ms := duration.Seconds() * 1000
 		m.topologyRefreshLatency.Record(context.Background(), ms)
 	}
 }

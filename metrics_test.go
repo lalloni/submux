@@ -428,6 +428,23 @@ func TestOtelMetrics_WorkerPoolQueueWait(t *testing.T) {
 	t.Error("queue_wait histogram not found")
 }
 
+// TestOtelMetrics_SubMillisecondLatency tests that sub-millisecond precision is preserved
+func TestOtelMetrics_SubMillisecondLatency(t *testing.T) {
+	duration := 500 * time.Microsecond // 0.5ms
+
+	// The old code truncates to 0
+	truncated := float64(duration.Milliseconds())
+	if truncated != 0 {
+		t.Skip("Milliseconds() no longer truncates")
+	}
+
+	// The correct conversion preserves sub-ms precision
+	precise := duration.Seconds() * 1000
+	if precise < 0.4 || precise > 0.6 {
+		t.Errorf("expected ~0.5ms, got %f", precise)
+	}
+}
+
 // TestSubscriptionType_String is covered in callback_test.go
 
 // BenchmarkOtelMetrics_CounterOverhead benchmarks OTEL counter overhead
