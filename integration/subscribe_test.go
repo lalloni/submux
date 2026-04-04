@@ -10,7 +10,7 @@ import (
 )
 
 func TestPSubscribePattern(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -19,8 +19,12 @@ func TestPSubscribePattern(t *testing.T) {
 	}
 	defer subMux.Close()
 
+	base := uniqueChannel("psub")
+	pattern := base + ":*"
+	testChannels := []string{base + ":1", base + ":2", base + ":abc"}
+
 	messages := make(chan *submux.Message, 10)
-	_, err = subMux.PSubscribeSync(context.Background(), []string{"test:*"}, func(ctx context.Context, msg *submux.Message) {
+	_, err = subMux.PSubscribeSync(context.Background(), []string{pattern}, func(ctx context.Context, msg *submux.Message) {
 		messages <- msg
 	})
 	if err != nil {
@@ -29,7 +33,6 @@ func TestPSubscribePattern(t *testing.T) {
 
 	// Publish messages matching the pattern
 	pubClient := cluster.GetClusterClient()
-	testChannels := []string{"test:1", "test:2", "test:abc"}
 	for _, ch := range testChannels {
 		err = pubClient.Publish(context.Background(), ch, "message").Err()
 		if err != nil {
@@ -70,7 +73,7 @@ func TestPSubscribePattern(t *testing.T) {
 }
 
 func TestSSubscribeSharded(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -147,7 +150,7 @@ func TestSSubscribeSharded(t *testing.T) {
 }
 
 func TestMultipleSubscriptionsSameChannel(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -228,7 +231,7 @@ func TestMultipleSubscriptionsSameChannel(t *testing.T) {
 }
 
 func TestUnsubscribe(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -259,7 +262,7 @@ func TestUnsubscribe(t *testing.T) {
 		if msg.Payload != "before" {
 			t.Errorf("Expected 'before', got %q", msg.Payload)
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Timeout waiting for message before unsubscribe")
 	}
 
@@ -289,7 +292,7 @@ func TestUnsubscribe(t *testing.T) {
 }
 
 func TestUnsubscribeMultipleChannels(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -301,7 +304,7 @@ func TestUnsubscribeMultipleChannels(t *testing.T) {
 	received := make(map[string]bool)
 	var mu sync.Mutex
 
-	channels := []string{"ch1", "ch2", "ch3"}
+	channels := []string{uniqueChannel("unsub-multi-1"), uniqueChannel("unsub-multi-2"), uniqueChannel("unsub-multi-3")}
 	sub, err := subMux.SubscribeSync(context.Background(), channels, func(ctx context.Context, msg *submux.Message) {
 		mu.Lock()
 		received[msg.Channel] = true
@@ -389,7 +392,7 @@ unsubscribe:
 }
 
 func TestUnsubscribePartial(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -398,12 +401,13 @@ func TestUnsubscribePartial(t *testing.T) {
 	}
 	defer subMux.Close()
 
+	channel := uniqueChannel("partial")
 	callback1Count := 0
 	callback2Count := 0
 	var mu sync.Mutex
 
 	// Subscribe with two callbacks
-	sub1, err := subMux.SubscribeSync(context.Background(), []string{"test"}, func(ctx context.Context, msg *submux.Message) {
+	sub1, err := subMux.SubscribeSync(context.Background(), []string{channel}, func(ctx context.Context, msg *submux.Message) {
 		mu.Lock()
 		callback1Count++
 		mu.Unlock()
@@ -412,7 +416,7 @@ func TestUnsubscribePartial(t *testing.T) {
 		t.Fatalf("Failed to subscribe (callback 1): %v", err)
 	}
 
-	_, err = subMux.SubscribeSync(context.Background(), []string{"test"}, func(ctx context.Context, msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(ctx context.Context, msg *submux.Message) {
 		mu.Lock()
 		callback2Count++
 		mu.Unlock()
@@ -423,7 +427,7 @@ func TestUnsubscribePartial(t *testing.T) {
 
 	// Publish before unsubscribe
 	pubClient := cluster.GetClusterClient()
-	err = pubClient.Publish(context.Background(), "test", "before").Err()
+	err = pubClient.Publish(context.Background(), channel, "before").Err()
 	if err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
@@ -458,7 +462,7 @@ func TestUnsubscribePartial(t *testing.T) {
 	}
 
 	// Publish after unsubscribe (one callback should still be active)
-	err = pubClient.Publish(context.Background(), "test", "after").Err()
+	err = pubClient.Publish(context.Background(), channel, "after").Err()
 	if err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}

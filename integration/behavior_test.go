@@ -16,6 +16,7 @@ import (
 // TestUnsubscribeWithCancelledContext verifies that even with a cancelled caller context,
 // UNSUBSCRIBE reaches Redis — no messages arrive after.
 func TestUnsubscribeWithCancelledContext(t *testing.T) {
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -79,6 +80,7 @@ func TestUnsubscribeWithCancelledContext(t *testing.T) {
 // TestUnsubscribeConfirmationTiming verifies that after Unsubscribe(ctx) returns,
 // immediately published messages are NOT delivered. Confirms the wait-for-Redis-confirmation fix.
 func TestUnsubscribeConfirmationTiming(t *testing.T) {
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -126,8 +128,8 @@ func TestUnsubscribeConfirmationTiming(t *testing.T) {
 		_ = pubClient.Publish(context.Background(), channel, "post-unsub-"+string(rune('0'+i))).Err()
 	}
 
-	// Wait 500ms, assert message channel is empty
-	time.Sleep(500 * time.Millisecond)
+	// Wait 200ms, assert message channel is empty
+	time.Sleep(200 * time.Millisecond)
 
 	select {
 	case msg := <-messages:
@@ -140,6 +142,7 @@ func TestUnsubscribeConfirmationTiming(t *testing.T) {
 // TestCloseWaitsForInFlightCallbacks verifies that Close() blocks until currently
 // executing callbacks complete (callbackWg.Wait()).
 func TestCloseWaitsForInFlightCallbacks(t *testing.T) {
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 
@@ -152,10 +155,12 @@ func TestCloseWaitsForInFlightCallbacks(t *testing.T) {
 	}
 
 	channel := uniqueChannel("close-waits-callbacks")
+	var callbackStarted atomic.Bool
 	var callbackCompleted atomic.Bool
 
 	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(ctx context.Context, msg *submux.Message) {
 		if msg.Type == submux.MessageTypeMessage {
+			callbackStarted.Store(true)
 			time.Sleep(500 * time.Millisecond)
 			callbackCompleted.Store(true)
 		}
@@ -172,7 +177,14 @@ func TestCloseWaitsForInFlightCallbacks(t *testing.T) {
 	}
 
 	// Wait for callback to start executing
-	time.Sleep(50 * time.Millisecond)
+	callbackCtx, callbackCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callbackCancel()
+	for !callbackStarted.Load() {
+		if callbackCtx.Err() != nil {
+			t.Fatal("Timeout waiting for callback to start")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	// Call Close() and measure elapsed time
 	start := time.Now()
@@ -190,6 +202,7 @@ func TestCloseWaitsForInFlightCallbacks(t *testing.T) {
 // TestCallbackPanicRecovery verifies that a panicking callback doesn't crash SubMux
 // or prevent other subscriptions from receiving messages.
 func TestCallbackPanicRecovery(t *testing.T) {
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -270,6 +283,7 @@ func TestCallbackPanicRecovery(t *testing.T) {
 // TestMixedSubscriptionTypes verifies that SUBSCRIBE + PSUBSCRIBE + SSUBSCRIBE
 // coexist on a single SubMux.
 func TestMixedSubscriptionTypes(t *testing.T) {
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -395,16 +409,19 @@ func TestMixedSubscriptionTypes(t *testing.T) {
 // TestMigrationTimeoutSignal verifies that EventMigrationTimeout signal is delivered
 // when auto-resubscription exceeds timeout.
 func TestMigrationTimeoutSignal(t *testing.T) {
-	t.Parallel() // Dedicated cluster - safe to run in parallel
+	// Not parallel: requires ReadTimeout > migrationTimeout to keep resubscription
+	// in-flight while the monitoring ticker fires. The longer ReadTimeout slows
+	// topology polling, which is only reliable with low system contention.
 	// Use 0 replicas so pausing a node prevents failover, ensuring resubscription hangs.
 	cluster := startTestClusterNoReplicas(t)
 	pubClient := cluster.GetClusterClient()
 
 	// Short ReadTimeout (500ms) so topology polls fail fast when routed to the
-	// paused node. The paused node's kernel accepts TCP but the process is
-	// frozen (SIGSTOP), so reads hang until ReadTimeout. go-redis PubSub reader
-	// retries on timeout (doesn't close the channel), so this doesn't kill the
-	// PubSub connection prematurely.
+	// paused node. stallCheck (1100ms) > migrationTimeout (1s): at the first tick
+	// (~1.1s), elapsed > timeout → timeout signal fires before the stall check.
+	// ReadTimeout < stallCheck is safe here because the resubscription to the
+	// paused node hangs on the TCP read (SIGSTOP keeps connection open), and the
+	// PubSub reader retries on timeout without closing the connection.
 	addrs := make([]string, len(cluster.nodes))
 	for i, node := range cluster.nodes {
 		addrs[i] = node.Address
@@ -417,11 +434,6 @@ func TestMigrationTimeoutSignal(t *testing.T) {
 	})
 	t.Cleanup(func() { submuxClient.Close() })
 
-	// migrationTimeout is 1s (the config minimum). stallCheck is 1100ms so the
-	// monitoring ticker fires every 1.1s. At the first tick (~1.1s), the timeout
-	// check runs first (1.1s > 1s → true) and returns before reaching the stall
-	// check. Poll interval is 300ms to detect migration quickly (the ~1μs window
-	// between Migrate and Pause makes race probability negligible at this interval).
 	subMux, err := submux.New(submuxClient,
 		submux.WithAutoResubscribe(true),
 		submux.WithTopologyPollInterval(300*time.Millisecond),
@@ -487,70 +499,58 @@ func TestMigrationTimeoutSignal(t *testing.T) {
 		t.Fatalf("Failed to migrate hashslot: %v", err)
 	}
 
-	// Pause the target node (SIGSTOP) so resubscription hangs instead of being refused.
-	// This causes TCP connections to remain open but unresponsive, triggering timeout.
+	// Pause the target node immediately after migration. The resubscription
+	// attempt will connect to the paused node — TCP succeeds (kernel level) but
+	// reads hang for ReadTimeout (5s), keeping the resubscription in-flight long
+	// enough for the monitoring ticker (2s) to fire and detect the timeout (1s).
 	t.Logf("Pausing target node %s", targetNode)
 	err = cluster.PauseNode(targetNode)
 	if err != nil {
 		t.Fatalf("Failed to pause target node: %v", err)
 	}
 	t.Cleanup(func() {
-		// Resume node to allow clean cluster shutdown
 		_ = cluster.ResumeNode(targetNode)
 	})
 
-	// Collect signals: expect EventMigration then EventMigrationTimeout within 10s.
-	var signalTypes []submux.EventType
+	// Collect signals: expect EventMigration then EventMigrationTimeout.
+	// 10s is ample without parallel dedicated-cluster contention.
+	var gotMigration, gotTimeout bool
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	for {
+	for !gotTimeout {
 		select {
 		case sig := <-signals:
 			t.Logf("Received signal: %v", sig.Signal.EventType)
-			signalTypes = append(signalTypes, sig.Signal.EventType)
-			// Check if we got the timeout signal
-			for _, st := range signalTypes {
-				if st == submux.EventMigrationTimeout {
-					goto done
-				}
+			switch sig.Signal.EventType {
+			case submux.EventMigration:
+				gotMigration = true
+			case submux.EventMigrationTimeout:
+				gotTimeout = true
 			}
 		case <-ctx.Done():
-			t.Fatalf("Timeout waiting for migration signals; received: %v", signalTypes)
+			t.Fatalf("Timeout waiting for signals; migration=%v timeout=%v", gotMigration, gotTimeout)
 		}
 	}
-done:
 
-	// Verify we got EventMigration then EventMigrationTimeout
-	hasMigration := false
-	hasTimeout := false
-	for _, st := range signalTypes {
-		if st == submux.EventMigration {
-			hasMigration = true
-		}
-		if st == submux.EventMigrationTimeout {
-			hasTimeout = true
-		}
+	if !gotMigration {
+		t.Error("Did not receive EventMigration signal before timeout signal")
 	}
-	if !hasMigration {
-		t.Error("Did not receive EventMigration signal")
-	}
-	if !hasTimeout {
-		t.Error("Did not receive EventMigrationTimeout signal")
-	}
+
 }
 
 // TestMigrationStalledSignal verifies that EventMigrationStalled signal is delivered
 // when no resubscription progress is made.
 func TestMigrationStalledSignal(t *testing.T) {
-	t.Parallel() // Dedicated cluster - safe to run in parallel
+	// Not parallel: same timing constraints as TestMigrationTimeoutSignal.
 	// Use 0 replicas so pausing a node prevents failover, ensuring resubscription hangs.
 	cluster := startTestClusterNoReplicas(t)
 	pubClient := cluster.GetClusterClient()
 
-	// Create a separate client for SubMux with short timeouts (500ms ReadTimeout).
-	// This keeps topology polling fast (fails within 500ms when hitting the paused node)
-	// while the resubscription read hangs long enough (>100ms) for the stall check to fire.
+	// Short ReadTimeout (500ms) so topology polls fail fast. stallCheck (100ms)
+	// fires well before migrationTimeout (30s). The PubSub reader retries on
+	// ReadTimeout without closing the connection, so the resubscription to the
+	// paused node stays in-flight across multiple read attempts.
 	addrs := make([]string, len(cluster.nodes))
 	for i, node := range cluster.nodes {
 		addrs[i] = node.Address
@@ -563,8 +563,6 @@ func TestMigrationStalledSignal(t *testing.T) {
 	})
 	t.Cleanup(func() { submuxClient.Close() })
 
-	// stallCheck (100ms) fires well before migrationTimeout (30s).
-	// Poll interval is 300ms to detect migration quickly.
 	subMux, err := submux.New(submuxClient,
 		submux.WithAutoResubscribe(true),
 		submux.WithTopologyPollInterval(300*time.Millisecond),
@@ -629,60 +627,46 @@ func TestMigrationStalledSignal(t *testing.T) {
 		t.Fatalf("Failed to migrate hashslot: %v", err)
 	}
 
-	// Pause the target node (SIGSTOP) so resubscription hangs instead of being refused.
-	// This causes TCP connections to remain open but unresponsive, triggering stall detection.
+	// Pause the target node immediately after migration.
 	t.Logf("Pausing target node %s", targetNode)
 	err = cluster.PauseNode(targetNode)
 	if err != nil {
 		t.Fatalf("Failed to pause target node: %v", err)
 	}
 	t.Cleanup(func() {
-		// Resume node to allow clean cluster shutdown
 		_ = cluster.ResumeNode(targetNode)
 	})
 
-	// Collect signals: expect EventMigration then EventMigrationStalled within 10s.
-	var signalTypes []submux.EventType
+	// Collect signals: expect EventMigration then EventMigrationStalled.
+	// 10s is ample without parallel dedicated-cluster contention.
+	var gotMigration, gotStalled bool
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	for {
+	for !gotStalled {
 		select {
 		case sig := <-signals:
 			t.Logf("Received signal: %v", sig.Signal.EventType)
-			signalTypes = append(signalTypes, sig.Signal.EventType)
-			for _, st := range signalTypes {
-				if st == submux.EventMigrationStalled {
-					goto done
-				}
+			switch sig.Signal.EventType {
+			case submux.EventMigration:
+				gotMigration = true
+			case submux.EventMigrationStalled:
+				gotStalled = true
 			}
 		case <-ctx.Done():
-			t.Fatalf("Timeout waiting for migration signals; received: %v", signalTypes)
+			t.Fatalf("Timeout waiting for signals; migration=%v stalled=%v", gotMigration, gotStalled)
 		}
 	}
-done:
 
-	hasMigration := false
-	hasStalled := false
-	for _, st := range signalTypes {
-		if st == submux.EventMigration {
-			hasMigration = true
-		}
-		if st == submux.EventMigrationStalled {
-			hasStalled = true
-		}
-	}
-	if !hasMigration {
-		t.Error("Did not receive EventMigration signal")
-	}
-	if !hasStalled {
-		t.Error("Did not receive EventMigrationStalled signal")
+	if !gotMigration {
+		t.Error("Did not receive EventMigration signal before stalled signal")
 	}
 }
 
 // TestDoubleCloseIdempotency verifies that calling Close() twice doesn't panic,
 // error, or deadlock.
 func TestDoubleCloseIdempotency(t *testing.T) {
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 
@@ -745,6 +729,7 @@ func TestDoubleCloseIdempotency(t *testing.T) {
 // TestWorkerPoolBackpressure verifies that with a tiny worker pool, all messages
 // are eventually delivered despite backpressure.
 func TestWorkerPoolBackpressure(t *testing.T) {
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 

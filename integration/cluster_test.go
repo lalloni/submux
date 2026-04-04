@@ -11,7 +11,7 @@ import (
 )
 
 func TestSubscribeBasic(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	if client == nil {
@@ -57,7 +57,7 @@ func TestSubscribeBasic(t *testing.T) {
 }
 
 func TestSubscribeMultipleChannels(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -69,7 +69,8 @@ func TestSubscribeMultipleChannels(t *testing.T) {
 	received := make(map[string]bool)
 	var mu sync.Mutex
 
-	_, err = subMux.SubscribeSync(context.Background(), []string{"channel1", "channel2", "channel3"}, func(ctx context.Context, msg *submux.Message) {
+	channels := []string{uniqueChannel("multi-1"), uniqueChannel("multi-2"), uniqueChannel("multi-3")}
+	_, err = subMux.SubscribeSync(context.Background(), channels, func(ctx context.Context, msg *submux.Message) {
 		if msg.Type == submux.MessageTypeMessage {
 			mu.Lock()
 			received[msg.Channel] = true
@@ -81,7 +82,6 @@ func TestSubscribeMultipleChannels(t *testing.T) {
 	}
 
 	// Publish to all channels
-	channels := []string{"channel1", "channel2", "channel3"}
 	for _, ch := range channels {
 		err = client.Publish(context.Background(), ch, "test").Err()
 		if err != nil {
@@ -128,7 +128,7 @@ func TestSubscribeMultipleChannels(t *testing.T) {
 }
 
 func TestSubscribeMessageDelivery(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
@@ -137,8 +137,9 @@ func TestSubscribeMessageDelivery(t *testing.T) {
 	}
 	defer subMux.Close()
 
+	channel := uniqueChannel("delivery")
 	messages := make(chan *submux.Message, 100)
-	_, err = subMux.SubscribeSync(context.Background(), []string{"test"}, func(ctx context.Context, msg *submux.Message) {
+	_, err = subMux.SubscribeSync(context.Background(), []string{channel}, func(ctx context.Context, msg *submux.Message) {
 		messages <- msg
 	})
 	if err != nil {
@@ -148,7 +149,7 @@ func TestSubscribeMessageDelivery(t *testing.T) {
 	// Publish multiple messages
 	pubClient := cluster.GetClusterClient()
 	for i := 0; i < 10; i++ {
-		err = pubClient.Publish(context.Background(), "test", fmt.Sprintf("message-%d", i)).Err()
+		err = pubClient.Publish(context.Background(), channel, fmt.Sprintf("message-%d", i)).Err()
 		if err != nil {
 			t.Fatalf("Failed to publish message %d: %v", i, err)
 		}
@@ -175,7 +176,7 @@ func TestSubscribeMessageDelivery(t *testing.T) {
 }
 
 func TestSubscribeErrorHandling(t *testing.T) {
-	// t.Parallel() - disabled to reduce flakiness
+	t.Parallel()
 	cluster := getSharedCluster(t)
 	client := cluster.GetClusterClient()
 	subMux, err := submux.New(client)
