@@ -3,6 +3,7 @@ package submux
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -280,5 +281,71 @@ func TestRapidSequentialMigrationsSameHashslot(t *testing.T) {
 	subs := f.newMeta.getSubscriptions("test-channel")
 	if len(subs) != 1 {
 		t.Errorf("subscription count in metadata = %d, want 1 (no duplicates after rapid migrations)", len(subs))
+	}
+}
+
+// TestResubscribeOnNewNode_StalePubSubReference verifies that when a
+// subscription's PubSub reference is changed by another goroutine between
+// the state-marking loop and the migration loop, the subscription is still
+// correctly removed from the *original* metadata (issue #6 TOCTOU race).
+func TestResubscribeOnNewNode_StalePubSubReference(t *testing.T) {
+	f := newMigrationTestFixture(t)
+
+	// Create an intermediate PubSub+metadata that a concurrent goroutine
+	// will swap into the subscription between the two loops.
+	intermediatePS := &redis.PubSub{}
+	intermediateMeta := &pubSubMetadata{
+		pubsub:               intermediatePS,
+		nodeAddr:             "nodeC:7000",
+		logger:               f.cfg.logger,
+		recorder:             &noopMetrics{},
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 100),
+		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
+	}
+
+	f.pool.mu.Lock()
+	f.pool.pubSubMetadata[intermediatePS] = intermediateMeta
+	f.pool.mu.Unlock()
+
+	// Simulate a concurrent goroutine that changes the sub's PubSub reference
+	// between the first getPubSub() read and its use for removeSubscription.
+	// With the merged loop + snapshot (issue #6 fix), getPubSub() is read
+	// once and used consistently, so this mutation cannot cause the removal
+	// to target the wrong metadata.
+	//
+	// We start a goroutine that flips the PubSub as soon as the state
+	// transitions to Closed (set at the top of the migration loop).
+	flipDone := make(chan struct{})
+	go func() {
+		defer close(flipDone)
+		for {
+			s := f.sub.getState()
+			if s == subStateClosed || s == subStatePending || s == subStateFailed {
+				f.sub.setPubSub(intermediatePS)
+				return
+			}
+			runtime.Gosched()
+		}
+	}()
+
+	migration := hashslotMigration{hashslot: f.hashslot, oldNode: "nodeA:7000", newNode: "nodeB:7000"}
+
+	var processedCount atomic.Int64
+	var wg sync.WaitGroup
+	f.tm.resubscribeOnNewNode(context.Background(), []*subscription{f.sub}, migration, &processedCount, &wg)
+	wg.Wait()
+	<-flipDone
+
+	// The subscription must have been removed from oldMeta.
+	// With the TOCTOU bug, the second loop re-reads getPubSub() which now
+	// returns intermediatePS, so removeSubscription targets intermediateMeta
+	// instead of oldMeta — leaving the subscription orphaned in oldMeta.
+	oldSubs := f.oldMeta.getSubscriptions("test-channel")
+	if len(oldSubs) != 0 {
+		t.Errorf("subscription still in oldMeta after migration: count=%d, want 0 (TOCTOU race — issue #6)", len(oldSubs))
 	}
 }

@@ -813,15 +813,6 @@ func (tm *topologyMonitor) resubscribeOnNewNode(ctx context.Context, subs []*sub
 				continue
 			}
 
-			// Unsubscribe from old connection (if still active)
-			for _, sub := range channelSubs {
-				meta := tm.subMux.pool.getMetadata(sub.getPubSub())
-				if meta != nil && meta.getState() == connStateActive {
-					// Mark subscription as closed (will be recreated)
-					sub.setState(subStateClosed, nil)
-				}
-			}
-
 			// Recreate subscriptions on new node
 			// Use migration ctx for connection creation (replaces per-iteration timeout)
 			newPubsub, err := tm.subMux.pool.getPubSubForHashslot(ctx, migration.hashslot)
@@ -840,8 +831,17 @@ func (tm *topologyMonitor) resubscribeOnNewNode(ctx context.Context, subs []*sub
 				continue
 			}
 			for _, sub := range channelSubs {
+				// Snapshot the current PubSub once to avoid TOCTOU races (issue #6):
+				// another goroutine may call setPubSub between reads.
+				oldPubSub := sub.getPubSub()
+				oldMeta := tm.subMux.pool.getMetadata(oldPubSub)
+
+				// Mark subscription as closed on old connection (if still active)
+				if oldMeta != nil && oldMeta.getState() == connStateActive {
+					sub.setState(subStateClosed, nil)
+				}
+
 				// Remove subscription from old metadata before migrating
-				oldMeta := tm.subMux.pool.getMetadata(sub.getPubSub())
 				if oldMeta != nil {
 					oldMeta.removeSubscription(sub)
 				}
