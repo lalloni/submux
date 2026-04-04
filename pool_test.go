@@ -2096,3 +2096,26 @@ func TestClusterOptionsToNodeOptions(t *testing.T) {
 		t.Error("PoolFIFO = true, want false (not cascaded)")
 	}
 }
+
+func BenchmarkGetSubscriptions(b *testing.B) {
+	meta := &pubSubMetadata{
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+	}
+
+	// Add 5 subscriptions to a channel
+	for range 5 {
+		sub := &subscription{channel: "bench-channel"}
+		meta.mu.Lock()
+		meta.subscriptions["bench-channel"] = append(meta.subscriptions["bench-channel"], sub)
+		meta.mu.Unlock()
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for b.Loop() {
+		subs := meta.getSubscriptions("bench-channel")
+		_ = subs
+	}
+}
