@@ -1811,10 +1811,7 @@ func TestMigrationContextHeadroom_MinimumOneSecond(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Compute headroom using the FIXED formula
-			headroom := 2 * tt.stallCheckInterval
-			if headroom < 1*time.Second {
-				headroom = 1 * time.Second
-			}
+			headroom := max(2*tt.stallCheckInterval, 1*time.Second)
 			computedDeadline := tt.migrationTimeout + headroom
 
 			if computedDeadline < tt.wantMinDeadline {
