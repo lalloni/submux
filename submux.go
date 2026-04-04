@@ -617,12 +617,29 @@ func (sm *SubMux) unsubscribeSubscription(ctx context.Context, sub *Sub) error {
 				firstErr = err
 			}
 		case <-p.meta.loopDone:
-			if firstErr == nil {
-				firstErr = fmt.Errorf("pubsub event loop stopped: %w", ErrEventLoopStopped)
+			// Event loop exited. The response may still have arrived in the
+			// buffered channel — prefer the actual error over a generic one.
+			select {
+			case err := <-p.response:
+				if err != nil && firstErr == nil {
+					firstErr = err
+				}
+			default:
+				if firstErr == nil {
+					firstErr = fmt.Errorf("pubsub event loop stopped: %w", ErrEventLoopStopped)
+				}
 			}
 		case <-ctx.Done():
-			if firstErr == nil {
-				firstErr = ctx.Err()
+			// Context cancelled. Check if the response arrived concurrently.
+			select {
+			case err := <-p.response:
+				if err != nil && firstErr == nil {
+					firstErr = err
+				}
+			default:
+				if firstErr == nil {
+					firstErr = ctx.Err()
+				}
 			}
 		}
 		// Phase 3: Clean metadata after response
