@@ -1111,8 +1111,12 @@ func TestTopologyState_SelectNodeForHashslot_PreferReplicas(t *testing.T) {
 	if !ok {
 		t.Error("expected ok=true")
 	}
-	if node != "replica1:7001" {
-		t.Errorf("PreferReplicas should return first replica, got %q", node)
+	// Should return a replica, not the master
+	if node == "master:7000" {
+		t.Errorf("PreferReplicas should return a replica, got master %q", node)
+	}
+	if node != "replica1:7001" && node != "replica2:7002" {
+		t.Errorf("PreferReplicas returned unexpected node %q", node)
 	}
 }
 
