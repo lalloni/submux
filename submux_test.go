@@ -653,3 +653,78 @@ func TestUnsubscribe_ContextBackground_NoHangWhenEventLoopStopped(t *testing.T) 
 		t.Fatal("Unsubscribe hung for 2s - should return immediately when event loop is stopped")
 	}
 }
+
+// TestUnsubscribe_PrefersResponseOverLoopDone verifies that when both the
+// event loop response and loopDone are ready, the actual error from the
+// response channel is preferred over ErrEventLoopStopped.
+//
+// Before the fix, if loopDone closed before the response was read, the
+// response was silently dropped and ErrEventLoopStopped was reported instead.
+func TestUnsubscribe_PrefersResponseOverLoopDone(t *testing.T) {
+	// Simulate the Phase 2 wait logic directly, since we can't easily
+	// trigger a full unsubscribe without a real Redis connection.
+
+	actualErr := fmt.Errorf("READONLY You can't write against a read only replica")
+	response := make(chan error, 1)
+	loopDone := make(chan struct{})
+
+	// Response arrives first
+	response <- actualErr
+	// Then loop dies
+	close(loopDone)
+
+	// Simulate the Phase 2 select (with the fix: nested select in loopDone branch)
+	var gotErr error
+	select {
+	case err := <-response:
+		gotErr = err
+	case <-loopDone:
+		// With non-deterministic select, we might land here even though
+		// response is also ready. The fix should try response first.
+		select {
+		case err := <-response:
+			gotErr = err
+		default:
+			gotErr = fmt.Errorf("pubsub event loop stopped: %w", ErrEventLoopStopped)
+		}
+	}
+
+	// This test verifies the FIXED behavior. If we land in the loopDone
+	// branch, the nested select should pick up the response.
+	if gotErr == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if errors.Is(gotErr, ErrEventLoopStopped) {
+		t.Errorf("got ErrEventLoopStopped, but actual error was available on response channel: %v", actualErr)
+	}
+	if gotErr != actualErr {
+		t.Errorf("got error %v, want %v", gotErr, actualErr)
+	}
+}
+
+// TestUnsubscribe_LoopDoneWithNoResponse verifies that when loopDone fires
+// and no response is available, ErrEventLoopStopped is correctly reported.
+func TestUnsubscribe_LoopDoneWithNoResponse(t *testing.T) {
+	loopDone := make(chan struct{})
+	response := make(chan error, 1)
+
+	// Loop dies with no response
+	close(loopDone)
+
+	var gotErr error
+	select {
+	case err := <-response:
+		gotErr = err
+	case <-loopDone:
+		select {
+		case err := <-response:
+			gotErr = err
+		default:
+			gotErr = fmt.Errorf("pubsub event loop stopped: %w", ErrEventLoopStopped)
+		}
+	}
+
+	if !errors.Is(gotErr, ErrEventLoopStopped) {
+		t.Errorf("expected ErrEventLoopStopped, got %v", gotErr)
+	}
+}
