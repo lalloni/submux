@@ -14,7 +14,7 @@ import (
 // The zero value is ready to use.
 type callbackSequencer struct {
 	mu           sync.Mutex
-	queue        []pendingCallback
+	queue        pendingCallbackRing
 	active       bool // true while a drain task is submitted/running
 	maxQueueSize int  // 0 means unlimited
 	overflowing  bool // true when queue is at capacity (for signal coalescing)
@@ -33,11 +33,16 @@ type pendingCallback struct {
 func (s *callbackSequencer) enqueue(ctx context.Context, logger *slog.Logger, recorder metricsRecorder, pool *WorkerPool, callbackWg *sync.WaitGroup, callback MessageCallback, msg *Message) {
 	s.mu.Lock()
 
+	// Lazy-initialize the ring buffer on first use
+	if s.queue.buf == nil {
+		s.queue.initRing(s.maxQueueSize)
+	}
+
 	// Record queue depth histogram at enqueue time
-	recorder.recordSubscriptionQueueDepth(len(s.queue))
+	recorder.recordSubscriptionQueueDepth(s.queue.len())
 
 	// Check queue capacity (0 means unlimited)
-	if s.maxQueueSize > 0 && len(s.queue) >= s.maxQueueSize {
+	if s.maxQueueSize > 0 && s.queue.len() >= s.maxQueueSize {
 		s.dropCount++
 		recorder.recordSubscriptionQueueDropped()
 
@@ -87,7 +92,7 @@ func (s *callbackSequencer) enqueue(ctx context.Context, logger *slog.Logger, re
 		s.dropCount = 0
 	}
 
-	s.queue = append(s.queue, pendingCallback{msg: msg, enqueuedAt: time.Now()})
+	s.queue.push(pendingCallback{msg: msg, enqueuedAt: time.Now()})
 	if s.active {
 		s.mu.Unlock()
 		return
@@ -128,14 +133,12 @@ func (s *callbackSequencer) makeDrainFunc(ctx context.Context, logger *slog.Logg
 	return func() {
 		for {
 			s.mu.Lock()
-			if len(s.queue) == 0 {
+			if s.queue.len() == 0 {
 				s.active = false
 				s.mu.Unlock()
 				return
 			}
-			item := s.queue[0]
-			s.queue[0] = pendingCallback{} // zero for GC
-			s.queue = s.queue[1:]
+			item, _ := s.queue.pop()
 			s.mu.Unlock()
 
 			// Record queue wait time
