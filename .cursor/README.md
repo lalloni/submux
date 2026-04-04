@@ -49,11 +49,7 @@ submux/
    - Feature overview
    - Getting started guide
 
-4. **TODO.md** (~70 lines) - Current Work
-   - Pending features
-   - Completed work
-
-5. **CHANGELOG.md** (~200 lines) - Version History
+4. **CHANGELOG.md** (~200 lines) - Version History
    - Release notes
    - Breaking changes
 

@@ -13,8 +13,7 @@ These rules apply to all work in the submux project. Always consult the primary 
 1. **[AGENTS.md](../../AGENTS.md)** - START HERE for all workflows, commands, and conventions
 2. **[DESIGN.md](../../DESIGN.md)** - PRIMARY TECHNICAL REFERENCE for architecture and design decisions
 3. **[README.md](../../README.md)** - User-facing documentation
-4. **[TODO.md](../../TODO.md)** - Planned work and completed features
-5. **[CHANGELOG.md](../../CHANGELOG.md)** - Version history and changes
+4. **[CHANGELOG.md](../../CHANGELOG.md)** - Version history and changes
 
 **Golden Rule:** Always reference these docs, never duplicate their content.
 
@@ -71,8 +70,6 @@ These rules apply to all work in the submux project. Always consult the primary 
 - ✅ Document design in DESIGN.md
 - ✅ Update README.md if user-visible
 - ✅ Update CHANGELOG.md in "Added" section
-- ✅ Move from TODO.md to "Completed" if applicable
-
 ### 3. Bug Fix
 - ✅ Update CHANGELOG.md in "Fixed" section
 - ✅ Update DESIGN.md if fix changes design/behavior
@@ -148,7 +145,7 @@ go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 - Public API: GoDoc comments on all exported symbols
 - Internal: Comment non-obvious logic, not obvious code
 - Use `//` for single-line, `/* */` for multi-line blocks
-- TODO comments: `// TODO: description` (track in TODO.md for big items)
+- TODO comments: `// TODO: description`
 
 ### File Organization
 - One primary type per file (exceptions for small helpers)

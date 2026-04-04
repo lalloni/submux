@@ -15,8 +15,7 @@ This file provides **actionable guidance** for Claude Code when working with thi
 **Primary documentation files:**
 1. **AGENTS.md** (504 lines) - Complete development guide, workflows, conventions
 2. **DESIGN.md** (430 lines) - Architecture, design patterns, thread safety rules
-3. **TODO.md** - Current roadmap and completed features
-4. **CHANGELOG.md** - Version history
+3. **CHANGELOG.md** - Version history
 
 ---
 

@@ -2,6 +2,50 @@
 
 All notable changes to the submux project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **BalancedAll connections now distribute across all shard replicas**: `selectLeastLoadedAcrossNodes` previously only considered master nodes when `BalancedAll` was configured. All replica nodes are now included in the selection pool, matching the documented behavior.
+- **PreferReplicas now distributes across all replicas**: Topology node selection for `PreferReplicas` mode was only considering replicas of a single shard. Now distributes subscriptions across replicas of all shards.
+- **Replace spin-loop pending connection fan-out with broadcast**: Pending connection waiters used a busy-wait spin loop. Replaced with a `sync.Cond` broadcast to wake all waiters efficiently.
+- **Skip closed/failed subscriptions in dispatchMessage**: The event loop's message dispatch could deliver messages to subscriptions in `Closed` or `Failed` state.
+- **Preserve sub-millisecond precision in latency histograms**: Callback latency metrics were truncated to whole milliseconds. Now records fractional milliseconds for accurate histogram buckets.
+- **Add nometrics build tag stub for newOtelMetrics**: Building with `-tags nometrics` failed because `newOtelMetrics` had no stub in the no-op file.
+- **Prevent removeSubscription from clearing unrelated pending entry**: `removeSubscription` could clear a pending connection entry that was created by a different subscribe call for the same hashslot.
+- **Serialize refreshTopology to prevent duplicate migration diffs**: Concurrent topology refreshes could both detect the same migration and emit duplicate diffs.
+- **Enforce minimum 1s headroom on migration context deadline**: When the parent context had very little time remaining, the migration sub-context could be created with near-zero timeout, causing immediate failures.
+- **Prefer buffered response over generic ErrEventLoopStopped in unsubscribe**: When the event loop stopped after buffering a real response, the unsubscribe path returned a generic error instead of the actual response.
+- **Check context before spawning goroutine in resubscribeOnNewNode**: A cancelled migration context did not prevent goroutine creation, leading to a goroutine storm of immediately-failing resubscriptions.
+- **Eliminate TOCTOU race in resubscription cleanup**: Resubscription cleanup read and acted on PubSub state in separate steps, allowing concurrent changes between the check and the action.
+- **Release lock during network I/O in refreshTopology**: `refreshTopology` held `topologyState.mu` while performing Redis CLUSTER SLOTS calls, blocking all connection lookups.
+- **Snapshot PubSub reference to prevent TOCTOU race in resubscription**: `resubscribeOnNewNode` read `sub.getPubSub()` at different points, allowing concurrent `setPubSub()` to change the reference between reads.
+- **Guard concurrent resubscription goroutines per hashslot** (#5): Multiple topology refreshes could spawn overlapping resubscription goroutines for the same hashslot.
+- **Recover failed subscriptions after migrationTimeout** (#4): Subscriptions left in `Failed` state after a migration timeout were never retried on subsequent topology changes.
+
+### Performance
+- **Reduce lock scope in closeAll to unblock metrics callbacks**: `closeAll` held the pool lock for the entire close sequence, blocking observable gauge callbacks that need read access.
+- **Use RLock for read-only getAnySlotForNode**: `getAnySlotForNode` only reads topology state but was acquiring a write lock.
+- **O(n) unsubscribe using set-based filtering**: `Unsubscribe` used O(n²) nested loops to filter the subscription list. Replaced with a set-based approach.
+- **Change command.args from []any to []string**: Command arguments were stored as `[]any` requiring type assertions and allocations. Changed to `[]string` since all Redis Pub/Sub command arguments are strings.
+- **Use copy-on-write for subscription slices**: `getSubscriptions` allocated a new slice copy on every call. Switched to copy-on-write so reads are zero-allocation when the slice hasn't been modified.
+
+### Changed
+- **Remove dead code**: Removed unused `invokeCallback`, `runFallbackCallback`, and `getKeyForSlot` functions.
+- **Use max() builtin for headroom calculation**: Replaced manual if/else with Go's `max()` builtin in migration context deadline calculation.
+
+### Documentation
+- **Fix callback signature in package doc example**: The `submux.go` package-level example used the old callback signature without the `context.Context` parameter.
+
+### Testing
+- Fix flaky PreferReplicas test after randomization.
+- Add unsubscribe subscription removal benchmark.
+- Add getSubscriptions allocation benchmark.
+- Add migration context headroom minimum 1s test.
+- Add tests for response-vs-loopDone race in unsubscribe Phase 2.
+- Add goroutine storm test for cancelled migration context.
+- Add cleanup race with connection failure test.
+- Add test proving refreshTopology blocks lookups during network I/O.
+
 ## [v0.4.0] - 2026-04-03
 
 ### Added
@@ -53,7 +97,7 @@ All notable changes to the submux project will be documented in this file.
   - `submux.connections.active` - Number of active Redis PubSub connections
   - `submux.subscriptions.redis` - Number of active Redis-level subscriptions
   - `submux.subscriptions.active` - Number of active SubMux subscription handles
-  - Completes metrics implementation from TODO.md
+  - Completes metrics implementation
   - All gauges use thread-safe callbacks for zero-overhead collection
 
 - **Integration Test Precondition Helpers**: Added explicit state validation helpers for integration tests
@@ -223,7 +267,7 @@ All notable changes to the submux project will be documented in this file.
 - Added comprehensive OpenTelemetry metrics documentation to DESIGN.md, README.md, and AGENTS.md
 - Established clear documentation hierarchy: DESIGN.md → AGENTS.md → CLAUDE.md
 - Added "Quick Decision Tree" in AGENTS.md to guide agents to correct documentation
-- Updated TODO.md to mark OpenTelemetry integration as completed
+- Marked OpenTelemetry integration as completed
 
 ### Technical Details
 - **Metrics Files**:

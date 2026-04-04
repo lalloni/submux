@@ -41,14 +41,7 @@ The submux project maintains a carefully structured documentation hierarchy to p
    - **Update frequency:** When public API changes or new features are added
    - **Audience:** Library users and potential adopters
 
-5. **[TODO.md](TODO.md)** - Project Roadmap (~70 lines)
-   - **Purpose:** Track pending work items and completed features
-   - **Contains:** Active TODO items, completed features with details
-   - **When to read:** Before starting new work, checking what's planned
-   - **Update frequency:** When work is completed or new items are identified
-   - **Sections:** Active TODOs, Completed section
-
-6. **[CHANGELOG.md](CHANGELOG.md)** - **★ RELEASE HISTORY** (~200 lines)
+5. **[CHANGELOG.md](CHANGELOG.md)** - **★ RELEASE HISTORY** (~200 lines)
    - **Purpose:** Document all notable changes for each version release
    - **Contains:** Version history with Added/Changed/Fixed/Documentation sections
    - **When to read:** To understand what changed between versions
@@ -79,8 +72,6 @@ The submux project maintains a carefully structured documentation hierarchy to p
    - ✅ Document design in [DESIGN.md](DESIGN.md)
    - ✅ Update [README.md](README.md) if user-visible
    - ✅ Update [CHANGELOG.md](CHANGELOG.md) in "Added" section
-   - ✅ Move from [TODO.md](TODO.md) to "Completed" if applicable
-
 3. **Bug Fixed:**
    - ✅ Update [CHANGELOG.md](CHANGELOG.md) in "Fixed" section
    - ✅ Update [DESIGN.md](DESIGN.md) if fix changes design/behavior
@@ -446,7 +437,6 @@ Enable with `WithMeterProvider(provider)` configuration option.
 | Topology/Resilience | [DESIGN.md Section 3](DESIGN.md#3-resilience-and-topology-handling) |
 | Development commands | This file (sections above) |
 | User quick start | [README.md](README.md) |
-| Pending work | [TODO.md](TODO.md) |
 | Release history and changes | [CHANGELOG.md](CHANGELOG.md) - What changed in each version |
 | Integration test guide | [integration/README.md](integration/README.md) |
 
@@ -461,8 +451,7 @@ Enable with `WithMeterProvider(provider)` configuration option.
 
 ### 2. Before Making Changes
 1. **Consult [DESIGN.md](DESIGN.md)** - Understand existing design patterns
-2. **Check [TODO.md](TODO.md)** - See if related work is planned
-3. **Review test coverage** - Check if similar tests exist in `integration/`
+2. **Review test coverage** - Check if similar tests exist in `integration/`
 
 ### 3. When Implementing
 1. **Update [DESIGN.md](DESIGN.md) first** - Document design before coding
