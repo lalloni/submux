@@ -3,6 +3,7 @@ package submux
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -1681,55 +1682,77 @@ func TestGetPubSubForHashslot_ConcurrentAccessRace(t *testing.T) {
 	wg.Wait()
 }
 
-func TestPendingConnectionError_PropagatesActualError(t *testing.T) {
-	// Verify that when a pending connection fails, waiters receive
-	// the actual error (not nil from a closed channel).
-	pending := &pendingConnection{
-		result: make(chan *redis.PubSub),
-		err:    make(chan error),
-	}
+func TestPendingConnection_AllWaitersGetResult(t *testing.T) {
+	pending := newPendingConnectionResult()
 
-	connErr := fmt.Errorf("connection failed: test error")
-
-	// Simulate multiple waiters
+	const numWaiters = 10
 	var wg sync.WaitGroup
-	errs := make([]error, 3)
-	for i := range 3 {
+	results := make([]*redis.PubSub, numWaiters)
+	errs := make([]error, numWaiters)
+
+	for i := range numWaiters {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			select {
-			case err := <-pending.err:
-				errs[idx] = err
-			case <-time.After(2 * time.Second):
-				t.Errorf("waiter %d timed out", idx)
-			}
+			results[idx], errs[idx] = pending.wait(context.Background())
 		}(i)
 	}
 
-	// Give waiters time to start
 	time.Sleep(10 * time.Millisecond)
 
-	// Send error to all waiters (same pattern as the fix)
-	go func() {
-		for {
-			select {
-			case pending.err <- connErr:
-			default:
-				close(pending.err)
-				return
-			}
-		}
-	}()
+	mockPubSub := redis.NewClient(&redis.Options{Addr: "localhost:0"}).Subscribe(context.Background())
+	defer mockPubSub.Close()
 
+	pending.resolve(mockPubSub, nil)
 	wg.Wait()
 
-	for i, err := range errs {
-		if err == nil {
-			t.Errorf("waiter %d received nil error, want non-nil", i)
-		} else if err.Error() != connErr.Error() {
-			t.Errorf("waiter %d got error %q, want %q", i, err, connErr)
+	for i := range numWaiters {
+		if errs[i] != nil {
+			t.Errorf("waiter %d got error: %v", i, errs[i])
 		}
+		if results[i] != mockPubSub {
+			t.Errorf("waiter %d got wrong PubSub", i)
+		}
+	}
+}
+
+func TestPendingConnection_AllWaitersGetError(t *testing.T) {
+	pending := newPendingConnectionResult()
+
+	const numWaiters = 10
+	var wg sync.WaitGroup
+	errs := make([]error, numWaiters)
+
+	for i := range numWaiters {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			_, errs[idx] = pending.wait(context.Background())
+		}(i)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	expectedErr := fmt.Errorf("connection failed")
+	pending.resolve(nil, expectedErr)
+	wg.Wait()
+
+	for i := range numWaiters {
+		if errs[i] == nil || errs[i].Error() != expectedErr.Error() {
+			t.Errorf("waiter %d got wrong error: %v", i, errs[i])
+		}
+	}
+}
+
+func TestPendingConnection_ContextCancellation(t *testing.T) {
+	pending := newPendingConnectionResult()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := pending.wait(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", err)
 	}
 }
 

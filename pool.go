@@ -343,11 +343,37 @@ func (m *pubSubMetadata) sendCommand(ctx context.Context, cmd *command) error {
 	}
 }
 
-// pendingConnection represents a connection creation in progress.
-// Other goroutines can wait on the channel for the result.
-type pendingConnection struct {
-	result chan *redis.PubSub
-	err    chan error
+// pendingConnectionResult stores the result of an in-flight connection creation.
+// Multiple goroutines can wait concurrently via wait(); the result is broadcast
+// to all waiters when resolve() is called.
+type pendingConnectionResult struct {
+	done   chan struct{} // closed when result is available
+	pubsub *redis.PubSub
+	err    error
+}
+
+func newPendingConnectionResult() *pendingConnectionResult {
+	return &pendingConnectionResult{
+		done: make(chan struct{}),
+	}
+}
+
+// resolve stores the result and broadcasts to all waiters.
+// Must be called exactly once.
+func (p *pendingConnectionResult) resolve(pubsub *redis.PubSub, err error) {
+	p.pubsub = pubsub
+	p.err = err
+	close(p.done)
+}
+
+// wait blocks until the result is available or ctx is cancelled.
+func (p *pendingConnectionResult) wait(ctx context.Context) (*redis.PubSub, error) {
+	select {
+	case <-p.done:
+		return p.pubsub, p.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // pubSubPool manages PubSub connections to Redis cluster nodes.
@@ -374,8 +400,8 @@ type pubSubPool struct {
 	pubSubMetadata map[*redis.PubSub]*pubSubMetadata
 
 	// pendingConnections tracks in-flight connection creation to prevent duplicates.
-	// Maps node address to a channel that will receive the created PubSub.
-	pendingConnections map[string]*pendingConnection
+	// Maps node address to a shared result that broadcasts to all waiters.
+	pendingConnections map[string]*pendingConnectionResult
 
 	// mu protects all maps.
 	mu sync.RWMutex
@@ -389,7 +415,7 @@ func newPubSubPool(clusterClient *redis.ClusterClient, config *config) *pubSubPo
 		nodePubSubs:        make(map[string][]*redis.PubSub),
 		hashslotPubSubs:    make(map[int][]*redis.PubSub),
 		pubSubMetadata:     make(map[*redis.PubSub]*pubSubMetadata),
-		pendingConnections: make(map[string]*pendingConnection),
+		pendingConnections: make(map[string]*pendingConnectionResult),
 	}
 }
 
@@ -554,27 +580,19 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 
 	// Check if there's already a pending connection to this node
 	if pending, ok := p.pendingConnections[bestNodeAddr]; ok {
-		// Another goroutine is creating a connection - wait for it
 		p.mu.Unlock()
-		select {
-		case pubsub := <-pending.result:
-			// Re-acquire lock to update hashslot mapping
-			p.mu.Lock()
-			p.addHashslotPubSub(hashslot, pubsub)
-			p.mu.Unlock()
-			return pubsub, nil
-		case err := <-pending.err:
+		pubsub, err := pending.wait(ctx)
+		if err != nil {
 			return nil, err
-		case <-ctx.Done():
-			return nil, ctx.Err()
 		}
+		p.mu.Lock()
+		p.addHashslotPubSub(hashslot, pubsub)
+		p.mu.Unlock()
+		return pubsub, nil
 	}
 
 	// Mark that we're creating a connection to this node
-	pending := &pendingConnection{
-		result: make(chan *redis.PubSub),
-		err:    make(chan error),
-	}
+	pending := newPendingConnectionResult()
 	p.pendingConnections[bestNodeAddr] = pending
 
 	// Release lock before creating connection (it may take time)
@@ -589,21 +607,8 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 
 	if err != nil {
 		p.mu.Unlock()
-		// Notify any waiting goroutines of the error.
-		// Send the actual error rather than closing (close sends zero value / nil).
 		connErr := fmt.Errorf("failed to create PubSub to node %s: %w", bestNodeAddr, err)
-		go func() {
-			for {
-				select {
-				case pending.err <- connErr:
-					// Successfully notified a waiter
-				default:
-					// No more waiters
-					close(pending.err)
-					return
-				}
-			}
-		}()
+		pending.resolve(nil, connErr)
 		return nil, connErr
 	}
 
@@ -611,20 +616,8 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 	p.addHashslotPubSub(hashslot, pubsub)
 	p.mu.Unlock()
 
-	// Notify any waiting goroutines (they will add their own hashslot mapping)
-	// Use a goroutine to avoid blocking if no one is waiting
-	go func() {
-		for {
-			select {
-			case pending.result <- pubsub:
-				// Successfully notified a waiter
-			default:
-				// No more waiters
-				close(pending.result)
-				return
-			}
-		}
-	}()
+	// Notify all waiters (non-blocking broadcast via channel close)
+	pending.resolve(pubsub, nil)
 
 	return pubsub, nil
 }
@@ -866,7 +859,7 @@ func (p *pubSubPool) closeAll() error {
 	p.nodePubSubs = make(map[string][]*redis.PubSub)
 	p.hashslotPubSubs = make(map[int][]*redis.PubSub)
 	p.pubSubMetadata = make(map[*redis.PubSub]*pubSubMetadata)
-	p.pendingConnections = make(map[string]*pendingConnection)
+	p.pendingConnections = make(map[string]*pendingConnectionResult)
 
 	return firstErr
 }
