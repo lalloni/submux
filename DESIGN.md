@@ -395,21 +395,27 @@ See section 6.4 for a complete production example with Prometheus integration.
 
 ### 6.6 Worker Pool Architecture
 
-Callbacks are executed through a **bounded worker pool** that prevents goroutine explosion under high message throughput.
+Callbacks are executed through a **bounded worker pool** that prevents goroutine explosion under high message throughput. A **per-subscription sequencer** ensures that messages are delivered to each subscription's callback in the same order they were received from Redis, preserving Redis Pub/Sub's ordering guarantee.
 
 **Design:**
 ```
-Messages → Worker Pool Queue → Worker Goroutines → Callback Execution
-              (bounded)         (fixed count)
+Messages → Per-Subscription Sequencer → Worker Pool → Callback Execution
+              (FIFO queue)              (bounded)     (sequential per sub)
 ```
+
+Each subscription has a `callbackSequencer` that maintains a FIFO queue and an `active` flag. When a message arrives, it is enqueued. If no drain task is running (`active == false`), a drain task is submitted to the worker pool. The drain task processes messages sequentially until the queue is empty, then resets `active` to allow future drain tasks. This guarantees:
+*   **Per-subscription ordering**: Messages for the same subscription execute in FIFO order
+*   **Cross-subscription concurrency**: Different subscriptions execute concurrently on different workers
+*   **No deadlocks**: The drain-loop pattern avoids the re-submit deadlock risk (where all workers try to re-queue and block)
 
 **Configuration:**
 *   `WithCallbackWorkers(n)`: Number of worker goroutines (default: `runtime.NumCPU() * 2`)
 *   `WithCallbackQueueSize(n)`: Queue capacity (default: `10000`)
 
 **Backpressure Behavior:**
-*   When the queue is full, `invokeCallback()` blocks until space is available
+*   When a new drain task must be submitted and the worker pool queue is full, submission blocks until space is available
 *   This propagates backpressure to the Redis message processing pipeline
+*   When a drain task is already running for a subscription, new messages buffer in the sequencer's in-memory queue (the subscription already occupies a worker slot)
 *   Use the `submux.workerpool.queue_wait` metric to monitor queue latency
 
 **Metrics:**

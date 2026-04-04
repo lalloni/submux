@@ -641,13 +641,13 @@ type captureHandler struct {
 	fn func(slog.Record)
 }
 
-func (h *captureHandler) Enabled(context.Context, slog.Level) bool  { return true }
+func (h *captureHandler) Enabled(context.Context, slog.Level) bool { return true }
 func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
 	h.fn(r)
 	return nil
 }
 func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *captureHandler) WithGroup(string) slog.Handler       { return h }
+func (h *captureHandler) WithGroup(string) slog.Handler      { return h }
 
 func TestExecuteCallback_NilLogger_PanicRecovery(t *testing.T) {
 	// Verify that a nil logger does not cause a secondary panic

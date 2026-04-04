@@ -128,6 +128,9 @@ type subscription struct {
 
 	// hashslot is the calculated hashslot for this channel.
 	hashslot int
+
+	// sequencer ensures ordered callback delivery for this subscription.
+	sequencer callbackSequencer
 }
 
 // getPubSub returns the PubSub connection for this subscription.
