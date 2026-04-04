@@ -412,3 +412,58 @@ func TestResubscription_CleanupRaceWithConnectionFailure(t *testing.T) {
 		t.Errorf("oldMeta subscription count = %d, want 0 (subscription should be removed regardless of connection state)", oldCount)
 	}
 }
+
+// TestResubscribeOnNewNode_NoGoroutineStormAfterCancel verifies that
+// resubscribeOnNewNode does not spawn goroutines for subscriptions after
+// the migration context is cancelled mid-iteration.
+func TestResubscribeOnNewNode_NoGoroutineStormAfterCancel(t *testing.T) {
+	f := newMigrationTestFixture(t)
+
+	// Create many subscriptions for the same hashslot with unique channels
+	const numSubs = 50
+	subs := make([]*subscription, 0, numSubs)
+
+	// Clear default fixture subscription
+	f.oldMeta.mu.Lock()
+	f.oldMeta.subscriptions = make(map[string][]*subscription)
+	f.oldMeta.mu.Unlock()
+	f.sm.subscriptions = make(map[string][]*subscription)
+
+	for i := range numSubs {
+		s := &subscription{
+			channel:   fmt.Sprintf("channel-%d", i),
+			subType:   subTypeSubscribe,
+			pubsub:    f.oldPS,
+			state:     subStateActive,
+			confirmCh: make(chan error, 1),
+			doneCh:    make(chan struct{}),
+			hashslot:  f.hashslot,
+			callback:  func(ctx context.Context, msg *Message) {},
+		}
+		f.oldMeta.addSubscription(s)
+		f.sm.subscriptions[s.channel] = []*subscription{s}
+		subs = append(subs, s)
+	}
+
+	migration := hashslotMigration{
+		hashslot: f.hashslot,
+		oldNode:  "nodeA:7000",
+		newNode:  "nodeB:7000",
+	}
+
+	// Cancel context before calling. getPubSubForHashslot will fail because
+	// context is done, and the function should skip ALL remaining subs.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var processedCount atomic.Int64
+	var wg sync.WaitGroup
+
+	f.tm.resubscribeOnNewNode(ctx, subs, migration, &processedCount, &wg)
+	wg.Wait()
+
+	// All subscriptions should be counted as processed (skipped due to cancelled ctx)
+	if got := processedCount.Load(); got != numSubs {
+		t.Errorf("processedCount = %d, want %d (all should be skipped on cancelled context)", got, numSubs)
+	}
+}
