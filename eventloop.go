@@ -56,6 +56,7 @@ func runEventLoop(meta *pubSubMetadata) {
 				// Genuine connection/Redis error - treat as fatal
 				meta.setState(connStateFailed)
 				meta.logger.Error("submux: command send error", "node", meta.nodeAddr, "error", err)
+				notifySubscriptionsOfFailure(meta, err)
 				return
 			}
 

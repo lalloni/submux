@@ -829,6 +829,7 @@ func TestRunEventLoop_CommandError_SetsFailedState(t *testing.T) {
 		done:                 make(chan struct{}),
 		loopDone:             make(chan struct{}),
 		logger:               slog.Default(),
+		recorder:             &noopMetrics{},
 		nodeAddr:             "test:7000",
 	}
 
@@ -894,6 +895,126 @@ func TestRunEventLoop_CommandError_SetsFailedState(t *testing.T) {
 	}
 }
 
+func TestRunEventLoop_CommandError_NotifiesExistingSubscriptions(t *testing.T) {
+	// When a command fails with a genuine connection error, the event loop exits.
+	// All existing active subscriptions on this connection should be notified of
+	// the failure — not just the subscription whose command failed.
+	client := redis.NewClient(&redis.Options{
+		Addr: "invalid:9999",
+	})
+	defer client.Close()
+
+	pubsub := client.Subscribe(context.Background())
+	defer pubsub.Close()
+
+	meta := &pubSubMetadata{
+		pubsub:               pubsub,
+		subscriptions:        make(map[string][]*subscription),
+		pendingSubscriptions: make(map[string]*subscription),
+		state:                connStateActive,
+		cmdCh:                make(chan *command, 10),
+		done:                 make(chan struct{}),
+		loopDone:             make(chan struct{}),
+		logger:               slog.Default(),
+		recorder:             &noopMetrics{},
+		nodeAddr:             "test:7000",
+	}
+
+	// Create an existing active subscription (already confirmed, receiving messages)
+	var signalReceived *Message
+	var signalMu sync.Mutex
+	var signalWg sync.WaitGroup
+	signalWg.Add(1)
+
+	existingSub := &subscription{
+		channel: "existing-channel",
+		callback: func(ctx context.Context, msg *Message) {
+			signalMu.Lock()
+			signalReceived = msg
+			signalMu.Unlock()
+			signalWg.Done()
+		},
+		subType: subTypeSubscribe,
+		state:   subStateActive,
+	}
+	meta.subscriptions["existing-channel"] = []*subscription{existingSub}
+
+	// Create a pending subscription whose command will fail
+	pendingSub := &subscription{
+		channel:   "new-channel",
+		state:     subStatePending,
+		confirmCh: make(chan error, 1),
+	}
+	meta.pendingSubscriptions["new-channel"] = pendingSub
+
+	meta.wg.Add(1)
+	go runEventLoop(meta)
+
+	// Send a command that will fail (invalid connection)
+	responseCh := make(chan error, 1)
+	cmd := &command{
+		cmd:      cmdSubscribe,
+		args:     []any{"new-channel"},
+		sub:      pendingSub,
+		response: responseCh,
+	}
+	meta.cmdCh <- cmd
+
+	// Wait for event loop to exit
+	select {
+	case <-responseCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for command response")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		meta.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for event loop to exit")
+	}
+
+	// The existing active subscription should have been notified of failure
+	// Wait for signal callback with timeout
+	signalDone := make(chan struct{})
+	go func() {
+		signalWg.Wait()
+		close(signalDone)
+	}()
+
+	select {
+	case <-signalDone:
+		// Success - signal was delivered
+	case <-time.After(2 * time.Second):
+		t.Fatal("existing subscription was not notified of connection failure")
+	}
+
+	// Verify the existing subscription state is failed
+	if existingSub.getState() != subStateFailed {
+		t.Errorf("existing subscription state = %v, want %v", existingSub.getState(), subStateFailed)
+	}
+
+	// Verify signal message content
+	signalMu.Lock()
+	defer signalMu.Unlock()
+	if signalReceived == nil {
+		t.Fatal("signal message not received")
+	}
+	if signalReceived.Type != MessageTypeSignal {
+		t.Errorf("signal type = %v, want %v", signalReceived.Type, MessageTypeSignal)
+	}
+	if signalReceived.Signal == nil {
+		t.Fatal("signal info should not be nil")
+	}
+	if signalReceived.Signal.EventType != EventNodeFailure {
+		t.Errorf("event type = %v, want %v", signalReceived.Signal.EventType, EventNodeFailure)
+	}
+}
+
 func TestRunEventLoop_CommandError_NilResponse(t *testing.T) {
 	client := redis.NewClient(&redis.Options{
 		Addr: "invalid:9999",
@@ -912,6 +1033,7 @@ func TestRunEventLoop_CommandError_NilResponse(t *testing.T) {
 		done:                 make(chan struct{}),
 		loopDone:             make(chan struct{}),
 		logger:               slog.Default(),
+		recorder:             &noopMetrics{},
 		nodeAddr:             "test:7000",
 	}
 
