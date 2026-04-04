@@ -138,9 +138,15 @@ type pubSubMetadata struct {
 }
 
 // addSubscription adds a subscription to this PubSub.
+// Skips the add if the exact same pointer is already registered (issue #5).
 func (m *pubSubMetadata) addSubscription(sub *subscription) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, existing := range m.subscriptions[sub.channel] {
+		if existing == sub {
+			return
+		}
+	}
 	m.subscriptions[sub.channel] = append(m.subscriptions[sub.channel], sub)
 }
 

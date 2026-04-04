@@ -1072,7 +1072,7 @@ func TestResubscribeOnNewNodeWithMonitoring_EmptySubscriptions(t *testing.T) {
 	// Should complete quickly with empty subscriptions
 	done := make(chan struct{})
 	go func() {
-		tm.resubscribeOnNewNodeWithMonitoring(nil, migration)
+		tm.resubscribeOnNewNodeWithMonitoring(context.Background(), nil, migration)
 		close(done)
 	}()
 
@@ -1488,7 +1488,7 @@ func TestResubscribeOnNewNodeWithMonitoring_QuickCompletion(t *testing.T) {
 
 	// With empty subscriptions, should complete very quickly
 	start := time.Now()
-	tm.resubscribeOnNewNodeWithMonitoring(nil, migration)
+	tm.resubscribeOnNewNodeWithMonitoring(context.Background(), nil, migration)
 	elapsed := time.Since(start)
 
 	// Should complete in under 100ms (not waiting for timeouts)

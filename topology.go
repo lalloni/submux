@@ -242,6 +242,18 @@ type topologyMonitor struct {
 
 	// mu protects currentState and concurrent access to refreshTopology
 	mu sync.Mutex
+
+	// activeMigrations tracks in-flight migration goroutines per hashslot.
+	// Key: int (hashslot), Value: *migrationHandle.
+	// When a new migration arrives for a hashslot with an active goroutine,
+	// the old goroutine is cancelled first (cancel-and-replace). See issue #5.
+	activeMigrations sync.Map
+}
+
+// migrationHandle wraps a context.CancelFunc to provide pointer identity
+// for use with sync.Map.CompareAndDelete (CancelFunc is not comparable).
+type migrationHandle struct {
+	cancel context.CancelFunc
 }
 
 // newTopologyMonitor creates a new topology monitor.
@@ -479,9 +491,19 @@ func (tm *topologyMonitor) handleMigration(migration hashslotMigration) {
 		default:
 		}
 
+		// Cancel any in-flight migration goroutine for this hashslot (issue #5).
+		if prev, loaded := tm.activeMigrations.Load(migration.hashslot); loaded {
+			prev.(*migrationHandle).cancel()
+		}
+
+		migrationCtx, migrationCancel := context.WithCancel(context.Background())
+		handle := &migrationHandle{cancel: migrationCancel}
+		tm.activeMigrations.Store(migration.hashslot, handle)
+
 		go func() {
 			defer tm.wg.Done()
-			tm.resubscribeOnNewNodeWithMonitoring(affectedSubs, migration)
+			defer tm.activeMigrations.CompareAndDelete(migration.hashslot, handle)
+			tm.resubscribeOnNewNodeWithMonitoring(migrationCtx, affectedSubs, migration)
 		}()
 	}
 }
@@ -570,9 +592,19 @@ func (tm *topologyMonitor) recoverFailedSubscriptions() {
 		default:
 		}
 
+		// Cancel any in-flight migration goroutine for this hashslot (issue #5).
+		if prev, loaded := tm.activeMigrations.Load(hashslot); loaded {
+			prev.(*migrationHandle).cancel()
+		}
+
+		migrationCtx, migrationCancel := context.WithCancel(context.Background())
+		handle := &migrationHandle{cancel: migrationCancel}
+		tm.activeMigrations.Store(hashslot, handle)
+
 		go func(s []*subscription, m hashslotMigration) {
 			defer tm.wg.Done()
-			tm.resubscribeOnNewNodeWithMonitoring(s, m)
+			defer tm.activeMigrations.CompareAndDelete(m.hashslot, handle)
+			tm.resubscribeOnNewNodeWithMonitoring(migrationCtx, s, m)
 		}(subs, migration)
 	}
 }
@@ -648,7 +680,7 @@ func (tm *topologyMonitor) sendMigrationStalledSignal(subs []*subscription, migr
 
 // resubscribeOnNewNodeWithMonitoring recreates subscriptions on the new node after migration
 // with progress monitoring to detect timeouts and stalls.
-func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscription, migration hashslotMigration) {
+func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(parentCtx context.Context, subs []*subscription, migration hashslotMigration) {
 	migrationTimeout := tm.config.migrationTimeout
 	stallCheckInterval := tm.config.migrationStallCheck
 
@@ -675,7 +707,7 @@ func (tm *topologyMonitor) resubscribeOnNewNodeWithMonitoring(subs []*subscripti
 	// monitoring ticker fires. Adding 2×stallCheckInterval ensures at least one
 	// monitoring tick can observe the timeout and send the signal.
 	ctxDeadline := migrationTimeout + 2*stallCheckInterval
-	migrationCtx, migrationCancel := context.WithTimeout(context.Background(), ctxDeadline)
+	migrationCtx, migrationCancel := context.WithTimeout(parentCtx, ctxDeadline)
 	defer migrationCancel()
 
 	// Progress monitoring goroutine
