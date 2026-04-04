@@ -253,32 +253,36 @@ func TestWorkerPool_QueueLength(t *testing.T) {
 
 	// Block the single worker
 	blocker := make(chan struct{})
+	workerStarted := make(chan struct{})
 	pool.Submit(func() {
+		close(workerStarted)
 		<-blocker
 	})
 
-	// Give worker time to start
-	time.Sleep(10 * time.Millisecond)
+	// Wait for worker to actually pick up the blocking task
+	<-workerStarted
 
 	// Queue should be empty
 	if pool.QueueLength() != 0 {
 		t.Errorf("QueueLength = %d, want 0", pool.QueueLength())
 	}
 
-	// Submit tasks that will queue up
-	for range 5 {
+	// Submit tasks that will queue up (worker is blocked)
+	drained := make(chan struct{})
+	for range 4 {
 		pool.Submit(func() {})
 	}
+	pool.Submit(func() {
+		close(drained)
+	})
 
 	if pool.QueueLength() != 5 {
 		t.Errorf("QueueLength = %d, want 5", pool.QueueLength())
 	}
 
-	// Release blocker
+	// Release blocker and wait for the last task to run
 	close(blocker)
-
-	// Wait for queue to drain
-	time.Sleep(50 * time.Millisecond)
+	<-drained
 
 	if pool.QueueLength() != 0 {
 		t.Errorf("QueueLength = %d, want 0 after drain", pool.QueueLength())

@@ -847,24 +847,7 @@ func TestSubscription_WaitForConfirmation_ContextCanceled(t *testing.T) {
 
 // Edge case: Subscription types
 
-func TestSubscriptionType_String(t *testing.T) {
-	tests := []struct {
-		subType  subscriptionType
-		expected string
-	}{
-		{subTypeSubscribe, "subscribe"},
-		{subTypePSubscribe, "psubscribe"},
-		{subTypeSSubscribe, "ssubscribe"},
-		{subscriptionType(99), "unknown"},
-	}
-
-	for _, tt := range tests {
-		result := subscriptionTypeToString(tt.subType)
-		if result != tt.expected {
-			t.Errorf("subscriptionTypeToString(%d) = %q, want %q", tt.subType, result, tt.expected)
-		}
-	}
-}
+// TestSubscriptionType_String is covered in callback_test.go
 
 // Edge case: Closed subscription behavior
 

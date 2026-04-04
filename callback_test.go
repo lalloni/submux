@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestSubscriptionTypeToString_AllTypes(t *testing.T) {
+func TestSubscriptionType_String_AllTypes(t *testing.T) {
 	tests := []struct {
 		subType  subscriptionType
 		expected string
@@ -19,9 +19,9 @@ func TestSubscriptionTypeToString_AllTypes(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result := subscriptionTypeToString(tt.subType)
+		result := tt.subType.String()
 		if result != tt.expected {
-			t.Errorf("subscriptionTypeToString(%d) = %q, want %q", tt.subType, result, tt.expected)
+			t.Errorf("subscriptionType(%d).String() = %q, want %q", tt.subType, result, tt.expected)
 		}
 	}
 }

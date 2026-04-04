@@ -208,25 +208,14 @@ func handleSubscriptionConfirmation(meta *pubSubMetadata, sub *redis.Subscriptio
 	return nil
 }
 
-// handleMessageFromPubSub handles regular SUBSCRIBE messages.
-func handleMessageFromPubSub(meta *pubSubMetadata, channel, payload string) error {
-	subs := meta.getSubscriptions(channel)
+// dispatchMessage looks up subscriptions by key, records a metric, and invokes all callbacks.
+func dispatchMessage(meta *pubSubMetadata, lookupKey string, msg *Message) error {
+	subs := meta.getSubscriptions(lookupKey)
 	if len(subs) == 0 {
-		// Subscription not found
 		return nil
 	}
 
-	// Record message received metric
-	meta.recorder.recordMessageReceived("subscribe", meta.nodeAddr)
-
-	// Create message and invoke all callbacks
-	msg := &Message{
-		Type:             MessageTypeMessage,
-		Channel:          channel,
-		Payload:          payload,
-		Timestamp:        time.Now(),
-		SubscriptionType: subTypeSubscribe,
-	}
+	meta.recorder.recordMessageReceived(msg.SubscriptionType.String(), meta.nodeAddr)
 
 	for _, sub := range subs {
 		invokeCallbackOrdered(meta.lifecycleCtx, meta.logger, meta.recorder, meta.workerPool, meta.callbackWg, sub, msg)
@@ -234,60 +223,38 @@ func handleMessageFromPubSub(meta *pubSubMetadata, channel, payload string) erro
 	return nil
 }
 
+// handleMessageFromPubSub handles regular SUBSCRIBE messages.
+func handleMessageFromPubSub(meta *pubSubMetadata, channel, payload string) error {
+	return dispatchMessage(meta, channel, &Message{
+		Type:             MessageTypeMessage,
+		Channel:          channel,
+		Payload:          payload,
+		Timestamp:        time.Now(),
+		SubscriptionType: subTypeSubscribe,
+	})
+}
+
 // handlePMessageFromPubSub handles PSUBSCRIBE pattern messages.
 func handlePMessageFromPubSub(meta *pubSubMetadata, pattern, channel, payload string) error {
-	subs := meta.getSubscriptions(pattern)
-	if len(subs) == 0 {
-		// Subscription not found
-		return nil
-	}
-
-	// Record message received metric
-	meta.recorder.recordMessageReceived("psubscribe", meta.nodeAddr)
-
-	// Create message and invoke all callbacks
-	msg := &Message{
+	return dispatchMessage(meta, pattern, &Message{
 		Type:             MessageTypePMessage,
 		Pattern:          pattern,
 		Channel:          channel,
 		Payload:          payload,
 		Timestamp:        time.Now(),
 		SubscriptionType: subTypePSubscribe,
-	}
-
-	for _, sub := range subs {
-		invokeCallbackOrdered(meta.lifecycleCtx, meta.logger, meta.recorder, meta.workerPool, meta.callbackWg, sub, msg)
-	}
-	return nil
+	})
 }
 
 // handleSMessageFromPubSub handles SSUBSCRIBE sharded messages.
 func handleSMessageFromPubSub(meta *pubSubMetadata, channel, payload string) error {
-	// For SSUBSCRIBE, the pattern field in go-redis is used as the channel
-	// We need to look up subscriptions by channel name
-	subs := meta.getSubscriptions(channel)
-	if len(subs) == 0 {
-		// Try pattern lookup as fallback
-		// In some cases, go-redis might use pattern field
-		return nil
-	}
-
-	// Record message received metric
-	meta.recorder.recordMessageReceived("ssubscribe", meta.nodeAddr)
-
-	// Create message and invoke all callbacks
-	msg := &Message{
+	return dispatchMessage(meta, channel, &Message{
 		Type:             MessageTypeSMessage,
 		Channel:          channel,
 		Payload:          payload,
 		Timestamp:        time.Now(),
 		SubscriptionType: subTypeSSubscribe,
-	}
-
-	for _, sub := range subs {
-		invokeCallbackOrdered(meta.lifecycleCtx, meta.logger, meta.recorder, meta.workerPool, meta.callbackWg, sub, msg)
-	}
-	return nil
+	})
 }
 
 // drainCmdCh drains all pending commands from cmdCh, sending an error to each

@@ -21,7 +21,7 @@ func executeCallback(ctx context.Context, logger *slog.Logger, recorder metricsR
 	// Get subscription type (handle nil message)
 	var subType string
 	if msg != nil {
-		subType = subscriptionTypeToString(msg.SubscriptionType)
+		subType = msg.SubscriptionType.String()
 	} else {
 		subType = "unknown"
 	}
@@ -66,16 +66,3 @@ func executeCallback(ctx context.Context, logger *slog.Logger, recorder metricsR
 	callback(ctx, msg)
 }
 
-// subscriptionTypeToString converts subscriptionType to string for metrics.
-func subscriptionTypeToString(st subscriptionType) string {
-	switch st {
-	case subTypeSubscribe:
-		return "subscribe"
-	case subTypePSubscribe:
-		return "psubscribe"
-	case subTypeSSubscribe:
-		return "ssubscribe"
-	default:
-		return "unknown"
-	}
-}

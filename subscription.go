@@ -16,6 +16,20 @@ const (
 	subTypeSSubscribe
 )
 
+// String returns a human-readable name for the subscription type (satisfies fmt.Stringer).
+func (st subscriptionType) String() string {
+	switch st {
+	case subTypeSubscribe:
+		return "subscribe"
+	case subTypePSubscribe:
+		return "psubscribe"
+	case subTypeSSubscribe:
+		return "ssubscribe"
+	default:
+		return "unknown"
+	}
+}
+
 // subscribeCommandName returns the Redis command name for subscribing with this type.
 func (st subscriptionType) subscribeCommandName() string {
 	switch st {

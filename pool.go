@@ -218,8 +218,11 @@ func (m *pubSubMetadata) removeSubscription(sub *subscription) {
 			m.subscriptions[sub.channel] = newSubs
 		}
 	}
-	// Also remove from pending subscriptions if present
-	delete(m.pendingSubscriptions, sub.channel)
+	// Only remove from pending if this specific subscription is the pending one.
+	// Unconditional delete would clear an unrelated pending subscription for the same channel.
+	if m.pendingSubscriptions[sub.channel] == sub {
+		delete(m.pendingSubscriptions, sub.channel)
+	}
 }
 
 // addPendingSubscription adds a subscription to the pending list.
@@ -256,7 +259,11 @@ func (m *pubSubMetadata) getSubscriptions(channel string) []*subscription {
 func (m *pubSubMetadata) getAllSubscriptions() []*subscription {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	subs := make([]*subscription, 0)
+	n := 0
+	for _, subList := range m.subscriptions {
+		n += len(subList)
+	}
+	subs := make([]*subscription, 0, n)
 	for _, subList := range m.subscriptions {
 		subs = append(subs, subList...)
 	}
@@ -409,6 +416,25 @@ func (p *pubSubPool) addHashslotPubSub(hashslot int, pubsub *redis.PubSub) {
 	p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], pubsub)
 }
 
+// findLeastLoadedPubSub returns the active PubSub with the fewest subscriptions,
+// or nil if none are active. Caller must hold p.mu (read or write).
+func (p *pubSubPool) findLeastLoadedPubSub(pubsubs []*redis.PubSub) *redis.PubSub {
+	var best *redis.PubSub
+	minSubs := math.MaxInt
+	for _, ps := range pubsubs {
+		meta := p.pubSubMetadata[ps]
+		if meta == nil || meta.getState() != connStateActive {
+			continue
+		}
+		count := meta.subscriptionCount()
+		if count < minSubs {
+			minSubs = count
+			best = ps
+		}
+	}
+	return best
+}
+
 // getPubSubForHashslot returns a PubSub connection for the given hashslot.
 // It selects the least-loaded PubSub from available connections.
 func (p *pubSubPool) getPubSubForHashslot(ctx context.Context, hashslot int) (*redis.PubSub, error) {
@@ -416,25 +442,9 @@ func (p *pubSubPool) getPubSubForHashslot(ctx context.Context, hashslot int) (*r
 	pubsubs := p.hashslotPubSubs[hashslot]
 
 	if len(pubsubs) > 0 {
-		// Find least-loaded PubSub (under read lock to protect pubSubMetadata access)
-		var bestPubSub *redis.PubSub
-		minSubs := math.MaxInt
-
-		for _, pubsub := range pubsubs {
-			meta := p.pubSubMetadata[pubsub]
-			if meta == nil || meta.getState() != connStateActive {
-				continue
-			}
-			count := meta.subscriptionCount()
-			if count < minSubs {
-				minSubs = count
-				bestPubSub = pubsub
-			}
-		}
-
-		if bestPubSub != nil {
+		if best := p.findLeastLoadedPubSub(pubsubs); best != nil {
 			p.mu.RUnlock()
-			return bestPubSub, nil
+			return best, nil
 		}
 	}
 	p.mu.RUnlock()
@@ -467,29 +477,10 @@ func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int) 
 	// Check if we already have a PubSub connection to this node
 	p.mu.Lock()
 	if pubsubs, ok := p.nodePubSubs[nodeAddr]; ok && len(pubsubs) > 0 {
-		// Find least-loaded PubSub
-		var bestPubSub *redis.PubSub
-		minSubs := math.MaxInt
-
-		for _, pubsub := range pubsubs {
-			meta := p.pubSubMetadata[pubsub]
-			if meta == nil || meta.getState() != connStateActive {
-				continue
-			}
-			count := meta.subscriptionCount()
-			if count < minSubs {
-				minSubs = count
-				bestPubSub = pubsub
-			}
-		}
-
-		if bestPubSub != nil {
-			// Reuse existing connection
-			// Add to hashslotPubSubs if not already present
-			// (Use a separate check or just append? hashslotPubSubs[hashslot] is likely empty since we are here)
-			p.addHashslotPubSub(hashslot, bestPubSub)
+		if best := p.findLeastLoadedPubSub(pubsubs); best != nil {
+			p.addHashslotPubSub(hashslot, best)
 			p.mu.Unlock()
-			return bestPubSub, nil
+			return best, nil
 		}
 	}
 	p.mu.Unlock()
@@ -517,7 +508,7 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 
 	var bestPubSub *redis.PubSub
 	var bestNodeAddr string
-	minSubs := math.MaxInt
+	bestCount := math.MaxInt
 	nodeConnCounts := make(map[string]int)
 
 	// Find least-loaded connection across ALL nodes
@@ -530,15 +521,11 @@ func (p *pubSubPool) selectLeastLoadedAcrossNodes(ctx context.Context, hashslot 
 
 		nodeConnCounts[nodeAddr] = len(pubsubs)
 
-		for _, pubsub := range pubsubs {
-			meta := p.pubSubMetadata[pubsub]
-			if meta == nil || meta.getState() != connStateActive {
-				continue
-			}
-			count := meta.subscriptionCount()
-			if count < minSubs {
-				minSubs = count
-				bestPubSub = pubsub
+		if best := p.findLeastLoadedPubSub(pubsubs); best != nil {
+			count := p.pubSubMetadata[best].subscriptionCount()
+			if count < bestCount {
+				bestCount = count
+				bestPubSub = best
 				bestNodeAddr = nodeAddr
 			}
 		}

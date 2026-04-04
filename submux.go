@@ -412,7 +412,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 		// Send command
 		if err := meta.sendCommand(ctx, cmd); err != nil {
 			// Record failed subscription attempt
-			sm.config.recorder.recordSubscriptionAttempt(subscriptionTypeToString(subType), false)
+			sm.config.recorder.recordSubscriptionAttempt(subType.String(), false)
 
 			// Remove from pending list on error
 			meta.removePendingSubscription(channel)
@@ -425,7 +425,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 		// Wait for confirmation (subscription is already in pending list)
 		if err := sub.waitForConfirmation(ctx); err != nil {
 			// Record failed subscription attempt
-			sm.config.recorder.recordSubscriptionAttempt(subscriptionTypeToString(subType), false)
+			sm.config.recorder.recordSubscriptionAttempt(subType.String(), false)
 
 			// Cleanup on error
 			sm.removeSubscriptionFromMap(channel, sub)
@@ -436,7 +436,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 		// Check if subscription is in failed state
 		if sub.getState() == subStateFailed {
 			// Record failed subscription attempt
-			sm.config.recorder.recordSubscriptionAttempt(subscriptionTypeToString(subType), false)
+			sm.config.recorder.recordSubscriptionAttempt(subType.String(), false)
 
 			sm.removeSubscriptionFromMap(channel, sub)
 			meta.removeSubscription(sub)
@@ -447,7 +447,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 		// using waitForActive which broadcasts to all waiters
 		if err := existingPending.waitForActive(ctx); err != nil {
 			// The other subscription failed - we should also fail
-			sm.config.recorder.recordSubscriptionAttempt(subscriptionTypeToString(subType), false)
+			sm.config.recorder.recordSubscriptionAttempt(subType.String(), false)
 			sm.removeSubscriptionFromMap(channel, sub)
 			meta.removeSubscription(sub)
 			return nil, fmt.Errorf("subscription confirmation failed (waiting on concurrent subscription): %w", err)
@@ -455,7 +455,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 
 		// Check if the pending subscription succeeded
 		if existingPending.getState() == subStateFailed {
-			sm.config.recorder.recordSubscriptionAttempt(subscriptionTypeToString(subType), false)
+			sm.config.recorder.recordSubscriptionAttempt(subType.String(), false)
 			sm.removeSubscriptionFromMap(channel, sub)
 			meta.removeSubscription(sub)
 			return nil, fmt.Errorf("%w", ErrSubscriptionFailed)
@@ -470,7 +470,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 	}
 
 	// Record successful subscription attempt
-	sm.config.recorder.recordSubscriptionAttempt(subscriptionTypeToString(subType), true)
+	sm.config.recorder.recordSubscriptionAttempt(subType.String(), true)
 
 	return sub, nil
 }

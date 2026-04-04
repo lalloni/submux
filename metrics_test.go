@@ -468,25 +468,7 @@ func TestOtelMetrics_WorkerPoolQueueWait(t *testing.T) {
 	t.Error("queue_wait histogram not found")
 }
 
-// TestSubscriptionTypeToString verifies subscription type conversion
-func TestSubscriptionTypeToString(t *testing.T) {
-	tests := []struct {
-		subType  subscriptionType
-		expected string
-	}{
-		{subTypeSubscribe, "subscribe"},
-		{subTypePSubscribe, "psubscribe"},
-		{subTypeSSubscribe, "ssubscribe"},
-		{subscriptionType(99), "unknown"},
-	}
-
-	for _, tt := range tests {
-		got := subscriptionTypeToString(tt.subType)
-		if got != tt.expected {
-			t.Errorf("subscriptionTypeToString(%v) = %q, want %q", tt.subType, got, tt.expected)
-		}
-	}
-}
+// TestSubscriptionType_String is covered in callback_test.go
 
 // BenchmarkNoopMetrics_Overhead benchmarks no-op recorder overhead
 func BenchmarkNoopMetrics_Overhead(b *testing.B) {
