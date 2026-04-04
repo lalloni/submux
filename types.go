@@ -71,6 +71,10 @@ type SignalInfo struct {
 
 	// Details contains additional details about the event.
 	Details string
+
+	// DroppedCount is the number of messages dropped since the overflow episode began.
+	// Only meaningful when EventType is EventQueueOverflow.
+	DroppedCount int
 }
 
 // EventType represents the type of a signal event.
@@ -82,6 +86,7 @@ const (
 	EventMigration        EventType = "migration"
 	EventMigrationTimeout EventType = "migration_timeout"
 	EventMigrationStalled EventType = "migration_stalled"
+	EventQueueOverflow    EventType = "queue_overflow"
 )
 
 // NodePreference determines the strategy for distributing subscriptions across cluster nodes.

@@ -145,8 +145,29 @@ sm, err := submux.New(rdb,
 | `WithMigrationStallCheck(duration)` | `2s` | How often to check for stalled migrations (min: 100ms) |
 | `WithCallbackWorkers(int)` | `runtime.NumCPU() * 2` | Number of worker goroutines for callback execution |
 | `WithCallbackQueueSize(int)` | `10000` | Maximum pending callbacks in worker pool queue |
+| `WithSubscriptionQueueLimit(int)` | `100` | Max messages queued per subscription before dropping (0 = unlimited) |
 | `WithLogger(*slog.Logger)` | `slog.Default()` | Custom structured logger |
 | `WithMeterProvider(metric.MeterProvider)` | `nil` | OpenTelemetry metrics provider (opt-in) |
+
+### Per-Subscription Options
+
+Subscribe methods accept optional `SubscribeOption` parameters to override defaults for individual subscriptions:
+
+```go
+// Override the queue limit for a high-throughput subscription
+sub, err := sm.SubscribeSync(ctx, []string{"firehose"}, callback,
+    submux.WithQueueLimit(10000),  // allow larger buffer for this subscription
+)
+
+// Disable queue limit entirely for a specific subscription
+sub, err := sm.SubscribeSync(ctx, []string{"critical"}, callback,
+    submux.WithQueueLimit(0),  // unlimited (no dropping)
+)
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `WithQueueLimit(int)` | SubMux default (100) | Max messages queued per subscription before dropping (0 = unlimited) |
 
 ### Node Distribution Strategies
 
@@ -188,6 +209,7 @@ SubMux sends **signal messages** to notify your application of cluster topology 
 | Migration stalled (no progress) | Yes | `EventMigrationStalled` | Resubscription is stuck, manual intervention may be needed |
 | Migration timeout reached | Yes | `EventMigrationTimeout` | Resubscription exceeded configured timeout |
 | Node failure detected | Yes | `EventNodeFailure` | Connection to node lost |
+| Subscription queue overflow | Yes | `EventQueueOverflow` | Per-subscription queue full, messages being dropped |
 | Topology refresh occurred | No | N/A | Background polling doesn't trigger signals |
 
 ### Relationship with Auto-Resubscribe
@@ -256,6 +278,11 @@ sub, _ := sm.SubscribeSync(ctx, []string{"orders"}, func(ctx context.Context, ms
 			// Migration resubscription exceeded 30 seconds
 			log.Printf("Migration timeout: %s", msg.Signal.Details)
 			alerts.SendCritical("Migration timeout - manual intervention may be required")
+
+		case submux.EventQueueOverflow:
+			// Per-subscription queue full, messages being dropped
+			log.Printf("Queue overflow: %s (dropped %d)", msg.Signal.Details, msg.Signal.DroppedCount)
+			alerts.SendWarning("Subscription queue overflow - callback too slow")
 		}
 	}
 })

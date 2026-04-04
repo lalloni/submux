@@ -17,19 +17,20 @@ type otelMetrics struct {
 	meter  metric.Meter
 
 	// Counters
-	messagesReceived      metric.Int64Counter
-	callbacksInvoked      metric.Int64Counter
-	callbacksPanics       metric.Int64Counter
-	subscriptionAttempts  metric.Int64Counter
-	connectionsCreated    metric.Int64Counter
-	connectionsFailed     metric.Int64Counter
-	migrationsStarted     metric.Int64Counter
-	migrationsCompleted   metric.Int64Counter
-	migrationsStalled     metric.Int64Counter
-	migrationsTimeout     metric.Int64Counter
-	topologyRefreshes     metric.Int64Counter
-	workerPoolSubmissions metric.Int64Counter
-	workerPoolDropped     metric.Int64Counter
+	messagesReceived         metric.Int64Counter
+	callbacksInvoked         metric.Int64Counter
+	callbacksPanics          metric.Int64Counter
+	subscriptionAttempts     metric.Int64Counter
+	connectionsCreated       metric.Int64Counter
+	connectionsFailed        metric.Int64Counter
+	migrationsStarted        metric.Int64Counter
+	migrationsCompleted      metric.Int64Counter
+	migrationsStalled        metric.Int64Counter
+	migrationsTimeout        metric.Int64Counter
+	topologyRefreshes        metric.Int64Counter
+	workerPoolSubmissions    metric.Int64Counter
+	workerPoolDropped        metric.Int64Counter
+	subscriptionQueueDropped metric.Int64Counter
 
 	// Histograms
 	callbackLatency        metric.Float64Histogram
@@ -37,6 +38,7 @@ type otelMetrics struct {
 	migrationDuration      metric.Float64Histogram
 	topologyRefreshLatency metric.Float64Histogram
 	workerPoolQueueWait    metric.Float64Histogram
+	subscriptionQueueDepth metric.Float64Histogram
 
 	// Observable gauges (registered dynamically)
 	workerPoolQueueDepth metric.Int64ObservableGauge
@@ -175,6 +177,15 @@ func newOtelMetrics(provider metric.MeterProvider, logger *slog.Logger) *otelMet
 		logger.Warn("submux: failed to create workerPoolDropped counter", "error", err)
 	}
 
+	m.subscriptionQueueDropped, err = meter.Int64Counter(
+		"submux.subscriptions.queue_dropped",
+		metric.WithDescription("Total messages dropped due to per-subscription queue overflow"),
+		metric.WithUnit("{message}"),
+	)
+	if err != nil {
+		logger.Warn("submux: failed to create subscriptionQueueDropped counter", "error", err)
+	}
+
 	// Create histogram instruments
 	m.callbackLatency, err = meter.Float64Histogram(
 		"submux.callbacks.latency",
@@ -224,6 +235,16 @@ func newOtelMetrics(provider metric.MeterProvider, logger *slog.Logger) *otelMet
 	)
 	if err != nil {
 		logger.Warn("submux: failed to create workerPoolQueueWait histogram", "error", err)
+	}
+
+	m.subscriptionQueueDepth, err = meter.Float64Histogram(
+		"submux.subscriptions.queue_depth",
+		metric.WithDescription("Per-subscription queue depth at enqueue time"),
+		metric.WithUnit("{message}"),
+		metric.WithExplicitBucketBoundaries(1, 10, 50, 100, 500, 1000, 5000, 10000),
+	)
+	if err != nil {
+		logger.Warn("submux: failed to create subscriptionQueueDepth histogram", "error", err)
 	}
 
 	return m
@@ -377,6 +398,18 @@ func (m *otelMetrics) recordWorkerPoolQueueWait(duration time.Duration) {
 func (m *otelMetrics) recordWorkerPoolDropped() {
 	if m.workerPoolDropped != nil {
 		m.workerPoolDropped.Add(context.Background(), 1)
+	}
+}
+
+func (m *otelMetrics) recordSubscriptionQueueDropped() {
+	if m.subscriptionQueueDropped != nil {
+		m.subscriptionQueueDropped.Add(context.Background(), 1)
+	}
+}
+
+func (m *otelMetrics) recordSubscriptionQueueDepth(depth int) {
+	if m.subscriptionQueueDepth != nil {
+		m.subscriptionQueueDepth.Record(context.Background(), float64(depth))
 	}
 }
 

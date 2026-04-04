@@ -24,6 +24,7 @@ type metricsRecorder interface {
 	recordTopologyRefresh(success bool)
 	recordWorkerPoolSubmission(blocked bool)
 	recordWorkerPoolDropped()
+	recordSubscriptionQueueDropped()
 
 	// Histogram metrics
 	recordCallbackLatency(subType string, duration time.Duration)
@@ -31,6 +32,7 @@ type metricsRecorder interface {
 	recordMigrationDuration(duration time.Duration)
 	recordTopologyRefreshLatency(duration time.Duration)
 	recordWorkerPoolQueueWait(duration time.Duration)
+	recordSubscriptionQueueDepth(depth int)
 
 	// Gauge registration (for observable metrics)
 	registerWorkerPoolGauges(pool *WorkerPool)
@@ -65,10 +67,12 @@ func (n *noopMetrics) recordMigrationTimeout()                     {}
 func (n *noopMetrics) recordTopologyRefresh(bool)                  {}
 func (n *noopMetrics) recordWorkerPoolSubmission(bool)             {}
 func (n *noopMetrics) recordWorkerPoolDropped()                    {}
+func (n *noopMetrics) recordSubscriptionQueueDropped()             {}
 func (n *noopMetrics) recordCallbackLatency(string, time.Duration) {}
 func (n *noopMetrics) recordMessageLatency(string, time.Duration)  {}
 func (n *noopMetrics) recordMigrationDuration(time.Duration)       {}
 func (n *noopMetrics) recordTopologyRefreshLatency(time.Duration)  {}
 func (n *noopMetrics) recordWorkerPoolQueueWait(time.Duration)     {}
+func (n *noopMetrics) recordSubscriptionQueueDepth(int)            {}
 func (n *noopMetrics) registerWorkerPoolGauges(*WorkerPool)        {}
 func (n *noopMetrics) registerPoolGauges(*pubSubPool, *SubMux)     {}
