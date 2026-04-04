@@ -339,9 +339,6 @@ func (tm *topologyMonitor) monitor() {
 func (tm *topologyMonitor) refreshTopology() error {
 	startTime := time.Now()
 
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-
 	ctx, cancel := context.WithTimeout(context.Background(), tm.pollInterval)
 	defer cancel()
 
@@ -422,12 +419,12 @@ func (tm *topologyMonitor) refreshTopology() error {
 	newState := newTopologyState()
 	newState.update(slots)
 
-	// Compare with previous state
+	// --- Swap phase (under lock) ---
+	tm.mu.Lock()
 	previousState := tm.currentState
 	migrations := newState.compareAndDetectChanges(previousState)
-
-	// Update current state
 	tm.currentState = newState
+	tm.mu.Unlock()
 
 	// Handle detected migrations
 	if len(migrations) > 0 {
