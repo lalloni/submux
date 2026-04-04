@@ -394,16 +394,6 @@ func (p *pubSubPool) addHashslotPubSub(hashslot int, pubsub *redis.PubSub) {
 	p.hashslotPubSubs[hashslot] = append(p.hashslotPubSubs[hashslot], pubsub)
 }
 
-// getKeyForSlot returns a key that hashes to the given slot.
-func getKeyForSlot(slot int) string {
-	for i := 0; ; i++ {
-		key := fmt.Sprintf("{%d}", i)
-		if Hashslot(key) == slot {
-			return key
-		}
-	}
-}
-
 // getPubSubForHashslot returns a PubSub connection for the given hashslot.
 // It selects the least-loaded PubSub from available connections.
 func (p *pubSubPool) getPubSubForHashslot(ctx context.Context, hashslot int) (*redis.PubSub, error) {

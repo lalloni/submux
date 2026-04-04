@@ -15,57 +15,6 @@ func invokeCallbackOrdered(ctx context.Context, logger *slog.Logger, recorder me
 	sub.sequencer.enqueue(ctx, logger, recorder, pool, callbackWg, sub.callback, msg)
 }
 
-// invokeCallback safely invokes a callback function with panic recovery.
-// The callback is invoked asynchronously via the worker pool.
-// If pool is nil, falls back to spawning a new goroutine (for backwards compatibility).
-// If callbackWg is non-nil, fallback goroutines are tracked so Close() can wait for them.
-func invokeCallback(ctx context.Context, logger *slog.Logger, recorder metricsRecorder, pool *WorkerPool, callbackWg *sync.WaitGroup, callback MessageCallback, msg *Message) {
-	// Use worker pool if available, otherwise fall back to goroutine
-	if pool != nil {
-		submitTime := time.Now()
-
-		task := func() {
-			// Record queue wait time (latency added by waiting in queue)
-			waitDuration := time.Since(submitTime)
-			recorder.recordWorkerPoolQueueWait(waitDuration)
-
-			executeCallback(ctx, logger, recorder, callback, msg)
-		}
-
-		// Try non-blocking submit first to detect if we would block
-		if pool.TrySubmit(task) {
-			// Queue had space - submission did not block
-			recorder.recordWorkerPoolSubmission(false)
-		} else {
-			// Queue was full - try blocking submit
-			if pool.Submit(task) {
-				// Blocked but eventually succeeded
-				recorder.recordWorkerPoolSubmission(true)
-			} else {
-				// Pool is stopped or context canceled - record drop and run in fallback goroutine
-				recorder.recordWorkerPoolDropped()
-				runFallbackCallback(ctx, callbackWg, logger, recorder, callback, msg)
-			}
-		}
-	} else {
-		runFallbackCallback(ctx, callbackWg, logger, recorder, callback, msg)
-	}
-}
-
-// runFallbackCallback spawns a goroutine to execute a callback outside the worker pool.
-// If callbackWg is non-nil, the goroutine is tracked so Close() can wait for it.
-func runFallbackCallback(ctx context.Context, callbackWg *sync.WaitGroup, logger *slog.Logger, recorder metricsRecorder, callback MessageCallback, msg *Message) {
-	if callbackWg != nil {
-		callbackWg.Add(1)
-	}
-	go func() {
-		if callbackWg != nil {
-			defer callbackWg.Done()
-		}
-		executeCallback(ctx, logger, recorder, callback, msg)
-	}()
-}
-
 // executeCallback executes a callback with panic recovery and metrics.
 // This is the core callback execution logic extracted for reuse.
 func executeCallback(ctx context.Context, logger *slog.Logger, recorder metricsRecorder, callback MessageCallback, msg *Message) {

@@ -98,7 +98,7 @@ func BenchmarkCallbackInvocation(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		invokeCallback(ctx, logger, &noopMetrics{}, nil, nil, callback, msg)
+		executeCallback(ctx, logger, &noopMetrics{}, callback, msg)
 	}
 }
 
@@ -123,7 +123,7 @@ func BenchmarkCallbackInvocation_MultipleCallbacks(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for _, cb := range callbacks {
-			invokeCallback(ctx, logger, &noopMetrics{}, nil, nil, cb, msg)
+			executeCallback(ctx, logger, &noopMetrics{}, cb, msg)
 		}
 	}
 }

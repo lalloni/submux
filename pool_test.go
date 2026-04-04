@@ -1024,43 +1024,6 @@ func TestPubSubMetadata_CloseWithPendingSubscriptions(t *testing.T) {
 	}
 }
 
-// Tests for getKeyForSlot - pure function that generates a key hashing to specific slot
-
-func TestGetKeyForSlot_ReturnsCorrectSlot(t *testing.T) {
-	testSlots := []int{0, 1, 100, 1000, 5000, 10000, 16383}
-
-	for _, slot := range testSlots {
-		t.Run("slot_"+string(rune('0'+slot%10)), func(t *testing.T) {
-			key := getKeyForSlot(slot)
-			actualSlot := Hashslot(key)
-			if actualSlot != slot {
-				t.Errorf("getKeyForSlot(%d) returned key %q which hashes to %d", slot, key, actualSlot)
-			}
-		})
-	}
-}
-
-func TestGetKeyForSlot_ConsistentResults(t *testing.T) {
-	// Same slot should return same key
-	slot := 5000
-	key1 := getKeyForSlot(slot)
-	key2 := getKeyForSlot(slot)
-	if key1 != key2 {
-		t.Errorf("getKeyForSlot(%d) returned different keys: %q and %q", slot, key1, key2)
-	}
-}
-
-func TestGetKeyForSlot_BoundarySlots(t *testing.T) {
-	// Test boundary slots
-	tests := []int{0, 16383}
-	for _, slot := range tests {
-		key := getKeyForSlot(slot)
-		if Hashslot(key) != slot {
-			t.Errorf("getKeyForSlot(%d) = %q, hashes to %d", slot, key, Hashslot(key))
-		}
-	}
-}
-
 // Tests for removePubSub with actual data
 
 func TestPubSubPool_RemovePubSub_WithData(t *testing.T) {
