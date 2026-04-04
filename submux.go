@@ -276,27 +276,27 @@ func New(clusterClient *redis.ClusterClient, opts ...Option) (*SubMux, error) {
 // SubscribeSync subscribes to one or more channels using regular channel subscription.
 // It waits for the subscription to be confirmed before returning.
 // Returns a Subscription that can be used to unsubscribe the provided callback.
-func (sm *SubMux) SubscribeSync(ctx context.Context, channels []string, callback MessageCallback) (*Sub, error) {
-	return sm.subscribe(ctx, channels, subTypeSubscribe, callback)
+func (sm *SubMux) SubscribeSync(ctx context.Context, channels []string, callback MessageCallback, opts ...SubscribeOption) (*Sub, error) {
+	return sm.subscribe(ctx, channels, subTypeSubscribe, callback, opts...)
 }
 
 // PSubscribeSync subscribes to one or more channel patterns using pattern subscription.
 // It waits for the subscription to be confirmed before returning.
 // Returns a Sub that can be used to unsubscribe the provided callback.
-func (sm *SubMux) PSubscribeSync(ctx context.Context, patterns []string, callback MessageCallback) (*Sub, error) {
-	return sm.subscribe(ctx, patterns, subTypePSubscribe, callback)
+func (sm *SubMux) PSubscribeSync(ctx context.Context, patterns []string, callback MessageCallback, opts ...SubscribeOption) (*Sub, error) {
+	return sm.subscribe(ctx, patterns, subTypePSubscribe, callback, opts...)
 }
 
 // SSubscribeSync subscribes to one or more channel patterns using sharded subscription (Redis 7.0+).
 // It waits for the subscription to be confirmed before returning.
 // Returns a Sub that can be used to unsubscribe the provided callback.
-func (sm *SubMux) SSubscribeSync(ctx context.Context, patterns []string, callback MessageCallback) (*Sub, error) {
-	return sm.subscribe(ctx, patterns, subTypeSSubscribe, callback)
+func (sm *SubMux) SSubscribeSync(ctx context.Context, patterns []string, callback MessageCallback, opts ...SubscribeOption) (*Sub, error) {
+	return sm.subscribe(ctx, patterns, subTypeSSubscribe, callback, opts...)
 }
 
 // subscribe is the internal implementation for all subscription types.
 // It returns a Sub that contains all internal subscriptions created for the provided callback.
-func (sm *SubMux) subscribe(ctx context.Context, channels []string, subType subscriptionType, callback MessageCallback) (*Sub, error) {
+func (sm *SubMux) subscribe(ctx context.Context, channels []string, subType subscriptionType, callback MessageCallback, opts ...SubscribeOption) (*Sub, error) {
 	sm.mu.Lock()
 	if sm.closed {
 		sm.mu.Unlock()
@@ -314,6 +314,18 @@ func (sm *SubMux) subscribe(ctx context.Context, channels []string, subType subs
 		return nil, fmt.Errorf("invalid subscription type: %d", subType)
 	}
 
+	// Apply per-subscription options
+	var subCfg subscribeConfig
+	for _, opt := range opts {
+		opt(&subCfg)
+	}
+
+	// Resolve effective queue limit: per-subscription override or SubMux default
+	effectiveQueueLimit := sm.config.subscriptionQueueLimit
+	if subCfg.queueLimitSet {
+		effectiveQueueLimit = subCfg.queueLimit
+	}
+
 	// Create Sub to hold all internal subscriptions
 	sub := &Sub{
 		subMux: sm,
@@ -322,7 +334,7 @@ func (sm *SubMux) subscribe(ctx context.Context, channels []string, subType subs
 
 	// Subscribe to each channel
 	for _, channel := range channels {
-		internalSub, err := sm.subscribeToChannel(ctx, channel, subType, cmdName, callback)
+		internalSub, err := sm.subscribeToChannel(ctx, channel, subType, cmdName, callback, effectiveQueueLimit)
 		if err != nil {
 			// If we fail partway through, unsubscribe what we've already subscribed to.
 			// Use context.Background() for cleanup: ctx may be expired (causing the failure),
@@ -339,7 +351,7 @@ func (sm *SubMux) subscribe(ctx context.Context, channels []string, subType subs
 // subscribeToChannel subscribes to a single channel.
 // Multiple subscriptions to the same channel are allowed, each with its own callback.
 // Returns the internal subscription created.
-func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subType subscriptionType, cmdName string, callback MessageCallback) (*subscription, error) {
+func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subType subscriptionType, cmdName string, callback MessageCallback, queueLimit int) (*subscription, error) {
 	// Validate channel name
 	if channel == "" {
 		return nil, fmt.Errorf("%w: channel name is empty", ErrInvalidChannel)
@@ -371,6 +383,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 		doneCh:    make(chan struct{}),
 		hashslot:  hashslot,
 	}
+	sub.sequencer.maxQueueSize = queueLimit
 
 	// Always track subscriptions in the global map.
 	// This is needed for signal delivery on topology changes (regardless of auto-resubscribe).

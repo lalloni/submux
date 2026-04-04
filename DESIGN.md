@@ -412,11 +412,22 @@ Each subscription has a `callbackSequencer` that maintains a FIFO queue and an `
 *   `WithCallbackWorkers(n)`: Number of worker goroutines (default: `runtime.NumCPU() * 2`)
 *   `WithCallbackQueueSize(n)`: Queue capacity (default: `10000`)
 
+**Per-Subscription Queue Limit:**
+
+Each subscription's sequencer queue is bounded to prevent unbounded memory growth when callbacks are slower than the incoming message rate. When the queue reaches its limit, the newest message is dropped (tail-drop) and an `EventQueueOverflow` signal is delivered to the callback via a direct goroutine (bypassing the full queue). The signal is coalesced: only one signal per overflow episode. When the queue drains below capacity, the overflow state resets.
+
+*   `WithSubscriptionQueueLimit(limit)`: Default limit for all subscriptions (default: `100`, `0` = unlimited)
+*   `WithQueueLimit(limit)` on `SubscribeOption`: Per-subscription override
+
+**Note:** The overflow signal bypasses the sequencer queue and may arrive out-of-order relative to queued messages. Callbacks should handle `EventQueueOverflow` signals defensively.
+
 **Backpressure Behavior:**
 *   When a new drain task must be submitted and the worker pool queue is full, submission blocks until space is available
 *   This propagates backpressure to the Redis message processing pipeline
-*   When a drain task is already running for a subscription, new messages buffer in the sequencer's in-memory queue (the subscription already occupies a worker slot)
+*   When a drain task is already running for a subscription, new messages buffer in the sequencer's in-memory queue up to the configured limit
+*   Messages exceeding the per-subscription queue limit are dropped (tail-drop)
 *   Use the `submux.workerpool.queue_wait` metric to monitor queue latency
+*   Use the `submux.subscriptions.queue_depth` histogram to monitor per-subscription queue pressure
 
 **Metrics:**
 | Metric Name | Type | Description |
@@ -426,6 +437,8 @@ Each subscription has a `callbackSequencer` that maintains a FIFO queue and an `
 | `submux.workerpool.queue_wait` | Histogram | Time callbacks wait in queue before execution (ms) |
 | `submux.workerpool.queue_depth` | Observable Gauge | Current number of tasks in queue |
 | `submux.workerpool.queue_capacity` | Observable Gauge | Maximum queue capacity |
+| `submux.subscriptions.queue_depth` | Histogram | Per-subscription queue depth at enqueue time |
+| `submux.subscriptions.queue_dropped` | Counter | Messages dropped due to per-subscription queue overflow |
 
 **Lifecycle:**
 *   Workers start when `New()` is called

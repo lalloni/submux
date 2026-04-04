@@ -5,6 +5,8 @@ All notable changes to the submux project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Bounded per-subscription queue with overflow protection**: Each subscription's internal message queue is now bounded (default: 100 messages). When a slow callback causes the queue to fill, new messages are dropped (tail-drop) and an `EventQueueOverflow` signal is delivered to the callback. This prevents unbounded memory growth under sustained back-pressure. The limit is configurable at SubMux level via `WithSubscriptionQueueLimit(limit)` and overridable per-subscription via `WithQueueLimit(limit)` on `SubscribeOption`. Set to 0 for unlimited (previous behavior). New metrics: `submux.subscriptions.queue_depth` (histogram) and `submux.subscriptions.queue_dropped` (counter).
+- **Per-subscription options**: `SubscribeSync`, `PSubscribeSync`, and `SSubscribeSync` now accept variadic `...SubscribeOption` for per-subscription configuration. Currently supports `WithQueueLimit`.
 - **Per-subscription message ordering guarantee**: Introduced `callbackSequencer` that ensures callbacks for a given subscription execute sequentially in the order messages were received from Redis. This preserves the Redis Pub/Sub ordered delivery promise that was broken by concurrent worker pool execution. Different subscriptions still execute concurrently. Uses a drain-loop pattern to avoid re-submit deadlock risks.
 
 ### Improved

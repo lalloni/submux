@@ -32,6 +32,10 @@ type config struct {
 	// If 0, defaults to 10000.
 	callbackQueueSize int
 
+	// subscriptionQueueLimit is the maximum number of messages queued per subscription
+	// before messages are dropped. 0 means unlimited.
+	subscriptionQueueLimit int
+
 	// logger is the structured logger to use.
 	logger *slog.Logger
 
@@ -47,16 +51,17 @@ type config struct {
 // defaultConfig returns the default configuration.
 func defaultConfig() *config {
 	return &config{
-		autoResubscribe:      false,
-		nodePreference:       BalancedAll,      // Default: distribute equally across all nodes
-		topologyPollInterval: 1 * time.Second,  // Default: poll at least once per second
-		migrationTimeout:     30 * time.Second, // Default: 30s max for migration resubscription
-		migrationStallCheck:  2 * time.Second,  // Default: check for stalls every 2s
-		callbackWorkers:      0,                // Default: 0 means runtime.NumCPU() * 2
-		callbackQueueSize:    0,                // Default: 0 means 10000
-		logger:               slog.Default(),
-		meterProvider:        nil,            // Default: metrics disabled
-		recorder:             &noopMetrics{}, // Default: no-op recorder
+		autoResubscribe:        false,
+		nodePreference:         BalancedAll,      // Default: distribute equally across all nodes
+		topologyPollInterval:   1 * time.Second,  // Default: poll at least once per second
+		migrationTimeout:       30 * time.Second, // Default: 30s max for migration resubscription
+		migrationStallCheck:    2 * time.Second,  // Default: check for stalls every 2s
+		callbackWorkers:        0,                // Default: 0 means runtime.NumCPU() * 2
+		callbackQueueSize:      0,                // Default: 0 means 10000
+		subscriptionQueueLimit: 100,              // Default: 100 messages per subscription
+		logger:                 slog.Default(),
+		meterProvider:          nil,            // Default: metrics disabled
+		recorder:               &noopMetrics{}, // Default: no-op recorder
 	}
 }
 
@@ -180,5 +185,19 @@ func WithCallbackQueueSize(size int) Option {
 			size = 1
 		}
 		c.callbackQueueSize = size
+	}
+}
+
+// WithSubscriptionQueueLimit sets the maximum number of messages that can be queued
+// per subscription before messages are dropped (tail-drop). When the limit is reached,
+// new messages are discarded and an EventQueueOverflow signal is delivered to the callback.
+// This limit can be overridden per-subscription using WithQueueLimit on SubscribeOption.
+// Set to 0 for unlimited (no dropping). Default is 100.
+func WithSubscriptionQueueLimit(limit int) Option {
+	return func(c *config) {
+		if limit < 0 {
+			limit = 0
+		}
+		c.subscriptionQueueLimit = limit
 	}
 }

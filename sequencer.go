@@ -13,9 +13,12 @@ import (
 //
 // The zero value is ready to use.
 type callbackSequencer struct {
-	mu     sync.Mutex
-	queue  []pendingCallback
-	active bool // true while a drain task is submitted/running
+	mu           sync.Mutex
+	queue        []pendingCallback
+	active       bool // true while a drain task is submitted/running
+	maxQueueSize int  // 0 means unlimited
+	overflowing  bool // true when queue is at capacity (for signal coalescing)
+	dropCount    int  // cumulative drops since overflow started
 }
 
 // pendingCallback holds a message waiting to be delivered to the callback.
@@ -29,6 +32,61 @@ type pendingCallback struct {
 // already running, it will pick up the newly enqueued message.
 func (s *callbackSequencer) enqueue(ctx context.Context, logger *slog.Logger, recorder metricsRecorder, pool *WorkerPool, callbackWg *sync.WaitGroup, callback MessageCallback, msg *Message) {
 	s.mu.Lock()
+
+	// Record queue depth histogram at enqueue time
+	recorder.recordSubscriptionQueueDepth(len(s.queue))
+
+	// Check queue capacity (0 means unlimited)
+	if s.maxQueueSize > 0 && len(s.queue) >= s.maxQueueSize {
+		s.dropCount++
+		recorder.recordSubscriptionQueueDropped()
+
+		sendSignal := false
+		if !s.overflowing {
+			s.overflowing = true
+			sendSignal = true
+		}
+		droppedSoFar := s.dropCount
+		s.mu.Unlock()
+
+		logger.Warn("submux: subscription queue full, dropping message",
+			"channel", msg.Channel,
+			"queue_limit", s.maxQueueSize,
+			"dropped_count", droppedSoFar,
+		)
+
+		// Send overflow signal bypassing the queue (direct goroutine)
+		if sendSignal {
+			signalMsg := &Message{
+				Type: MessageTypeSignal,
+				Signal: &SignalInfo{
+					EventType:    EventQueueOverflow,
+					Details:      "subscription queue full, messages being dropped",
+					DroppedCount: droppedSoFar,
+				},
+				Channel:          msg.Channel,
+				Timestamp:        time.Now(),
+				SubscriptionType: msg.SubscriptionType,
+			}
+			if callbackWg != nil {
+				callbackWg.Add(1)
+			}
+			go func() {
+				if callbackWg != nil {
+					defer callbackWg.Done()
+				}
+				executeCallback(ctx, logger, recorder, callback, signalMsg)
+			}()
+		}
+		return
+	}
+
+	// Reset overflow state when queue has space again
+	if s.overflowing {
+		s.overflowing = false
+		s.dropCount = 0
+	}
+
 	s.queue = append(s.queue, pendingCallback{msg: msg, enqueuedAt: time.Now()})
 	if s.active {
 		s.mu.Unlock()
