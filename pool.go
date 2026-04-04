@@ -139,15 +139,21 @@ type pubSubMetadata struct {
 
 // addSubscription adds a subscription to this PubSub.
 // Skips the add if the exact same pointer is already registered (issue #5).
+// Uses copy-on-write: a new slice is always created so that readers holding
+// a reference to the old slice are never affected by the mutation.
 func (m *pubSubMetadata) addSubscription(sub *subscription) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, existing := range m.subscriptions[sub.channel] {
+	old := m.subscriptions[sub.channel]
+	for _, existing := range old {
 		if existing == sub {
 			return
 		}
 	}
-	m.subscriptions[sub.channel] = append(m.subscriptions[sub.channel], sub)
+	newSubs := make([]*subscription, len(old)+1)
+	copy(newSubs, old)
+	newSubs[len(old)] = sub
+	m.subscriptions[sub.channel] = newSubs
 }
 
 // addSubscriptionAndCheckFirst atomically adds a subscription and determines if a SUBSCRIBE
@@ -164,8 +170,12 @@ func (m *pubSubMetadata) addSubscriptionAndCheckFirst(sub *subscription, channel
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Add subscription to the list
-	m.subscriptions[channel] = append(m.subscriptions[channel], sub)
+	// Add subscription to the list (COW: always create a new slice)
+	old := m.subscriptions[channel]
+	newSubs := make([]*subscription, len(old)+1)
+	copy(newSubs, old)
+	newSubs[len(old)] = sub
+	m.subscriptions[channel] = newSubs
 
 	// Check if there's already a pending subscription for this channel
 	if pending, ok := m.pendingSubscriptions[channel]; ok {
@@ -174,7 +184,7 @@ func (m *pubSubMetadata) addSubscriptionAndCheckFirst(sub *subscription, channel
 	}
 
 	// Check if this is the first subscription (not counting ourselves since we just added)
-	if len(m.subscriptions[channel]) == 1 {
+	if len(newSubs) == 1 {
 		// We're first - add to pending and signal to send SUBSCRIBE
 		m.pendingSubscriptions[channel] = sub
 		return true, nil
@@ -185,18 +195,28 @@ func (m *pubSubMetadata) addSubscriptionAndCheckFirst(sub *subscription, channel
 }
 
 // removeSubscription removes a subscription from this PubSub.
+// Uses copy-on-write: a new slice is created excluding the removed subscription,
+// so readers holding a reference to the old slice are never affected.
 func (m *pubSubMetadata) removeSubscription(sub *subscription) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	subs := m.subscriptions[sub.channel]
-	for i, s := range subs {
+	old := m.subscriptions[sub.channel]
+	idx := -1
+	for i, s := range old {
 		if s == sub {
-			m.subscriptions[sub.channel] = slices.Delete(subs, i, i+1)
+			idx = i
 			break
 		}
 	}
-	if len(m.subscriptions[sub.channel]) == 0 {
-		delete(m.subscriptions, sub.channel)
+	if idx >= 0 {
+		newSubs := make([]*subscription, len(old)-1)
+		copy(newSubs, old[:idx])
+		copy(newSubs[idx:], old[idx+1:])
+		if len(newSubs) == 0 {
+			delete(m.subscriptions, sub.channel)
+		} else {
+			m.subscriptions[sub.channel] = newSubs
+		}
 	}
 	// Also remove from pending subscriptions if present
 	delete(m.pendingSubscriptions, sub.channel)
@@ -224,17 +244,12 @@ func (m *pubSubMetadata) removePendingSubscription(channel string) {
 }
 
 // getSubscriptions returns all subscriptions for a channel.
+// The returned slice MUST NOT be modified by the caller — it is shared.
+// This is safe because all mutations use copy-on-write (new slice on every add/remove).
 func (m *pubSubMetadata) getSubscriptions(channel string) []*subscription {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	// Return a copy to prevent race conditions when the slice is modified concurrently
-	subs := m.subscriptions[channel]
-	if len(subs) == 0 {
-		return nil
-	}
-	result := make([]*subscription, len(subs))
-	copy(result, subs)
-	return result
+	return m.subscriptions[channel]
 }
 
 // getAllSubscriptions returns all subscriptions on this PubSub.
