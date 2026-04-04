@@ -2,6 +2,7 @@ package submux
 
 import (
 	"context"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1630,6 +1631,73 @@ func TestHandleMigration_ResubscribeTrackedByWaitGroup(t *testing.T) {
 		// Success — wg tracked the resubscription goroutine and it completed
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout: resubscription goroutine should have completed")
+	}
+}
+
+func TestRefreshTopology_BoundedByPollInterval(t *testing.T) {
+	// Start a TCP listener that accepts connections but never responds (black hole).
+	// This simulates an unresponsive Redis node.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	// Accept connections in the background so the dial succeeds, but never
+	// send any data so the subsequent read blocks until the context expires.
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Hold the connection open but never write anything.
+			go func(c net.Conn) {
+				buf := make([]byte, 1024)
+				for {
+					if _, err := c.Read(buf); err != nil {
+						return
+					}
+				}
+			}(conn)
+		}
+	}()
+
+	blackHoleAddr := ln.Addr().String()
+
+	// Create a ClusterClient with ContextTimeoutEnabled so go-redis
+	// actually respects context deadlines for socket I/O. Without this,
+	// go-redis ignores the context and uses its own DialTimeout/ReadTimeout.
+	// The long ReadTimeout (30s) ensures the test distinguishes between
+	// "bounded by context" (fast) vs "bounded by client timeout" (slow).
+	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:                 []string{blackHoleAddr},
+		ContextTimeoutEnabled: true,
+		ReadTimeout:           30 * time.Second,
+	})
+	defer clusterClient.Close()
+
+	pollInterval := 500 * time.Millisecond
+	cfg := defaultConfig()
+	cfg.topologyPollInterval = pollInterval
+	cfg.recorder = &noopMetrics{}
+
+	sm := &SubMux{
+		pool:          newPubSubPool(clusterClient, cfg),
+		subscriptions: make(map[string][]*subscription),
+	}
+	tm := newTopologyMonitor(clusterClient, cfg, sm)
+
+	start := time.Now()
+	_ = tm.refreshTopology()
+	elapsed := time.Since(start)
+
+	// The call should complete within 2x the poll interval at most.
+	// With context.Background() and 30s client timeouts, this will take
+	// far longer than 1s, so the test fails — proving the timeout is needed.
+	maxAllowed := 2 * pollInterval
+	if elapsed > maxAllowed {
+		t.Errorf("refreshTopology took %v, expected at most %v (pollInterval=%v)", elapsed, maxAllowed, pollInterval)
 	}
 }
 

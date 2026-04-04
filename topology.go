@@ -330,7 +330,8 @@ func (tm *topologyMonitor) refreshTopology() error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), tm.pollInterval)
+	defer cancel()
 
 	// First, reload the ClusterClient's internal state to ensure it's up to date
 	// This is important for proper command routing. ReloadState() doesn't return
