@@ -833,14 +833,18 @@ func (tm *topologyMonitor) resubscribeOnNewNode(ctx context.Context, subs []*sub
 				oldPubSub := sub.getPubSub()
 				oldMeta := tm.subMux.pool.getMetadata(oldPubSub)
 
-				// Mark subscription as closed on old connection (if still active)
-				if oldMeta != nil && oldMeta.getState() == connStateActive {
-					sub.setState(subStateClosed, nil)
-				}
-
-				// Remove subscription from old metadata before migrating
+				// Always remove from old metadata first — this is safe regardless
+				// of connection state and eliminates the TOCTOU race where the
+				// connection could transition to connStateFailed between the state
+				// check and removeSubscription (issue #7).
 				if oldMeta != nil {
 					oldMeta.removeSubscription(sub)
+					// Only mark as closed if connection was still active (graceful move).
+					// If the connection already failed, the subscription state was set
+					// by onEventLoopExit.
+					if oldMeta.getState() == connStateActive {
+						sub.setState(subStateClosed, nil)
+					}
 				}
 
 				// Update subscription's PubSub reference
