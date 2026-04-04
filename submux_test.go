@@ -728,3 +728,45 @@ func TestUnsubscribe_LoopDoneWithNoResponse(t *testing.T) {
 		t.Errorf("expected ErrEventLoopStopped, got %v", gotErr)
 	}
 }
+
+func BenchmarkUnsubscribeSubscription(b *testing.B) {
+	for b.Loop() {
+		b.StopTimer()
+		sm := &SubMux{
+			subscriptions: make(map[string][]*subscription),
+		}
+
+		// Create 50 channels with 10 subs each
+		subsByChannel := make(map[string][]*subscription)
+		for ch := range 50 {
+			channel := fmt.Sprintf("channel-%d", ch)
+			for range 10 {
+				sub := &subscription{channel: channel}
+				sm.subscriptions[channel] = append(sm.subscriptions[channel], sub)
+				subsByChannel[channel] = append(subsByChannel[channel], sub)
+			}
+		}
+		b.StartTimer()
+
+		// Benchmark the removal loop
+		for channel, internalSubs := range subsByChannel {
+			allSubs := sm.subscriptions[channel]
+			toRemove := make(map[*subscription]struct{}, len(internalSubs))
+			for _, s := range internalSubs {
+				toRemove[s] = struct{}{}
+			}
+			n := 0
+			for _, s := range allSubs {
+				if _, remove := toRemove[s]; !remove {
+					allSubs[n] = s
+					n++
+				}
+			}
+			if n == 0 {
+				delete(sm.subscriptions, channel)
+			} else {
+				sm.subscriptions[channel] = allSubs[:n]
+			}
+		}
+	}
+}
