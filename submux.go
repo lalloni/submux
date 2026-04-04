@@ -390,7 +390,7 @@ func (sm *SubMux) subscribeToChannel(ctx context.Context, channel string, subTyp
 	// The auto-resubscribe flag only controls whether we automatically recreate
 	// subscriptions after migration, not whether we track or send signals.
 	sm.mu.Lock()
-	sm.subscriptions[channel] = append(sm.subscriptions[channel], sub)
+	sm.addSubscriptionToMapLocked(channel, sub)
 	sm.mu.Unlock()
 
 	// Atomically check if we need to send a SUBSCRIBE command under the metadata lock.
@@ -632,6 +632,22 @@ func (sm *SubMux) unsubscribeSubscription(ctx context.Context, sub *Sub) error {
 	}
 
 	return firstErr
+}
+
+// addSubscriptionToMapLocked adds a subscription to the global subscriptions map,
+// first cleaning any failed or closed entries for the channel to prevent accumulation
+// of stale subscriptions (see issue #4).
+// The caller must hold sm.mu.
+func (sm *SubMux) addSubscriptionToMapLocked(channel string, sub *subscription) {
+	existing := sm.subscriptions[channel]
+	cleaned := existing[:0]
+	for _, s := range existing {
+		state := s.getState()
+		if state != subStateFailed && state != subStateClosed {
+			cleaned = append(cleaned, s)
+		}
+	}
+	sm.subscriptions[channel] = append(cleaned, sub)
 }
 
 // removeSubscriptionFromMap removes a subscription from the global subscriptions map.

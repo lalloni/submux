@@ -426,6 +426,14 @@ func (tm *topologyMonitor) refreshTopology() error {
 		tm.handleMigrations(migrations)
 	}
 
+	// Attempt to recover any subscriptions stuck in failed state (issue #4).
+	// This handles the case where a node was temporarily unreachable but recovered
+	// at the same address — no topology change is detected, so handleMigrations
+	// won't run, but failed subscriptions still need recovery.
+	if tm.config.autoResubscribe {
+		tm.recoverFailedSubscriptions()
+	}
+
 	// Record successful topology refresh
 	tm.config.recorder.recordTopologyRefresh(true)
 	tm.config.recorder.recordTopologyRefreshLatency(time.Since(startTime))
@@ -485,16 +493,88 @@ func (tm *topologyMonitor) findAffectedSubscriptions(hashslot int) []*subscripti
 
 	var affected []*subscription
 
-	// Iterate through all subscriptions and find those matching this hashslot
+	// Iterate through all subscriptions and find those matching this hashslot.
+	// Only include active or pending subscriptions — failed/closed ones should
+	// not receive signal broadcasts (see issue #4).
 	for _, subs := range tm.subMux.subscriptions {
 		for _, sub := range subs {
 			if sub.hashslot == hashslot {
-				affected = append(affected, sub)
+				state := sub.getState()
+				if state == subStateActive || state == subStatePending {
+					affected = append(affected, sub)
+				}
 			}
 		}
 	}
 
 	return affected
+}
+
+// collectFailedSubscriptions scans all subscriptions and returns those in subStateFailed,
+// grouped by hashslot. This is used by recoverFailedSubscriptions to find subscriptions
+// that need recovery after a node becomes reachable again (see issue #4).
+func (tm *topologyMonitor) collectFailedSubscriptions() map[int][]*subscription {
+	tm.subMux.mu.RLock()
+	defer tm.subMux.mu.RUnlock()
+
+	failed := make(map[int][]*subscription)
+	for _, subs := range tm.subMux.subscriptions {
+		for _, sub := range subs {
+			if sub.getState() == subStateFailed {
+				failed[sub.hashslot] = append(failed[sub.hashslot], sub)
+			}
+		}
+	}
+	return failed
+}
+
+// recoverFailedSubscriptions attempts to recover subscriptions that are stuck in
+// subStateFailed. This handles the case where a node was temporarily unreachable
+// but recovered at the same address — since compareAndDetectChanges sees no topology
+// change, handleMigrations is never called and failed subscriptions would be
+// permanently stranded without this recovery mechanism (see issue #4).
+func (tm *topologyMonitor) recoverFailedSubscriptions() {
+	failedByHashslot := tm.collectFailedSubscriptions()
+	if len(failedByHashslot) == 0 {
+		return
+	}
+
+	for hashslot, subs := range failedByHashslot {
+		currentNode, ok := tm.currentState.getNodeForHashslot(hashslot)
+		if !ok {
+			// Hashslot not in current topology, skip
+			continue
+		}
+
+		migration := hashslotMigration{
+			hashslot: hashslot,
+			oldNode:  "",
+			newNode:  currentNode,
+		}
+
+		tm.config.logger.Info("submux: recovering failed subscriptions",
+			"hashslot", hashslot, "node", currentNode, "count", len(subs))
+
+		// Invalidate pool cache so fresh connections are established
+		tm.subMux.pool.invalidateHashslot(hashslot)
+
+		// Record migration started (reuse existing metric)
+		tm.config.recorder.recordMigrationStarted()
+
+		// Launch resubscription with the same goroutine lifecycle pattern as handleMigration
+		tm.wg.Add(1)
+		select {
+		case <-tm.done:
+			tm.wg.Done()
+			return
+		default:
+		}
+
+		go func(s []*subscription, m hashslotMigration) {
+			defer tm.wg.Done()
+			tm.resubscribeOnNewNodeWithMonitoring(s, m)
+		}(subs, migration)
+	}
 }
 
 // broadcastSignal sends a signal message to each subscription's callback.
