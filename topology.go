@@ -130,10 +130,10 @@ func (ts *topologyState) selectNodeForHashslot(hashslot int, preference NodePref
 func (tm *topologyMonitor) getNodeForHashslot(hashslot int) (string, bool) {
 	// Copy state reference under lock to avoid nested lock acquisition
 	// (tm.mu -> topologyState.mu could deadlock if acquired in reverse elsewhere)
-	tm.mu.Lock()
+	tm.mu.RLock()
 	state := tm.currentState
 	preference := tm.config.nodePreference
-	tm.mu.Unlock()
+	tm.mu.RUnlock()
 
 	if state == nil {
 		return "", false
@@ -143,9 +143,9 @@ func (tm *topologyMonitor) getNodeForHashslot(hashslot int) (string, bool) {
 
 // getNodesForHashslot returns all nodes (master + replicas) for the given hashslot from the topology monitor.
 func (tm *topologyMonitor) getNodesForHashslot(hashslot int) ([]string, bool) {
-	tm.mu.Lock()
+	tm.mu.RLock()
 	state := tm.currentState
-	tm.mu.Unlock()
+	tm.mu.RUnlock()
 
 	if state == nil {
 		return nil, false
@@ -240,8 +240,13 @@ type topologyMonitor struct {
 	// pollInterval is how often to poll the topology.
 	pollInterval time.Duration
 
-	// mu protects currentState and concurrent access to refreshTopology
-	mu sync.Mutex
+	// refreshMu serializes refreshTopology calls so that concurrent refreshes
+	// don't produce incorrect migration diffs from comparing against stale state.
+	refreshMu sync.Mutex
+
+	// mu protects reads/writes of currentState. RWMutex allows concurrent
+	// topology lookups (RLock) while blocking only during state swaps (Lock).
+	mu sync.RWMutex
 
 	// activeMigrations tracks in-flight migration goroutines per hashslot.
 	// Key: int (hashslot), Value: *migrationHandle.
@@ -337,6 +342,11 @@ func (tm *topologyMonitor) monitor() {
 // It first calls ReloadState() to update the ClusterClient's internal state,
 // then fetches ClusterSlots() to get the slot information for comparison.
 func (tm *topologyMonitor) refreshTopology() error {
+	// Serialize refresh calls: two concurrent refreshes would both read the same
+	// previousState, produce the same migration diff, and trigger duplicate handling.
+	tm.refreshMu.Lock()
+	defer tm.refreshMu.Unlock()
+
 	startTime := time.Now()
 
 	ctx, cancel := context.WithTimeout(context.Background(), tm.pollInterval)
