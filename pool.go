@@ -530,6 +530,8 @@ func (p *pubSubPool) createPubSubForHashslot(ctx context.Context, hashslot int) 
 // If no connections exist, creates a new one to the least-loaded node (by connection count).
 // Uses a pending connections map to prevent duplicate connection creation under high concurrency.
 //
+// See ADR-004 for the rationale behind the distribution strategy.
+//
 // Distribution strategy: "spread first, then balance." If any node in the shard has
 // zero connections, a new connection is created there instead of reusing an existing
 // connection on another node. This ensures connections are distributed across all nodes

@@ -70,7 +70,7 @@ func (ts *topologyState) update(slots []redis.ClusterSlot) {
 }
 
 // enrichWithReplicaInfo adds replica nodes to hashslotToNodes using CLUSTER NODES
-// output. This is necessary because CLUSTER SLOTS may not include replica information
+// output (see ADR-004). This is necessary because CLUSTER SLOTS may not include replica information
 // (e.g. Redis 8+ only returns master nodes in CLUSTER SLOTS responses).
 //
 // The clusterNodesOutput parameter is the raw string from the CLUSTER NODES command.
