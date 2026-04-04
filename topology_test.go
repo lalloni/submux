@@ -1215,6 +1215,28 @@ func TestTopologyState_SelectNodeForHashslot_AllPreferences(t *testing.T) {
 	}
 }
 
+
+func TestSelectNodeForHashslot_PreferReplicas_DistributesAcrossReplicas(t *testing.T) {
+	ts := newTopologyState()
+	ts.hashslotToNodes[0] = []string{"master:6379", "replica1:6379", "replica2:6379", "replica3:6379"}
+
+	counts := make(map[string]int)
+	for range 100 {
+		node, ok := ts.selectNodeForHashslot(0, PreferReplicas)
+		if !ok {
+			t.Fatal("expected node")
+		}
+		if node == "master:6379" {
+			t.Fatal("should not select master when replicas exist")
+		}
+		counts[node]++
+	}
+
+	if len(counts) < 2 {
+		t.Errorf("expected distribution across replicas, got: %v", counts)
+	}
+}
+
 // Tests for getNodesForHashslot
 
 func TestTopologyState_GetNodesForHashslot_ReturnsCopy(t *testing.T) {

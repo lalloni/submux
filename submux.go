@@ -667,14 +667,16 @@ func (sm *SubMux) unsubscribeSubscription(ctx context.Context, sub *Sub) error {
 // The caller must hold sm.mu.
 func (sm *SubMux) addSubscriptionToMapLocked(channel string, sub *subscription) {
 	existing := sm.subscriptions[channel]
-	cleaned := existing[:0]
+	// Build a new slice (COW) to avoid mutating the backing array of the old
+	// slice, which could be held by concurrent readers after their RUnlock.
+	newSubs := make([]*subscription, 0, len(existing)+1)
 	for _, s := range existing {
 		state := s.getState()
 		if state != subStateFailed && state != subStateClosed {
-			cleaned = append(cleaned, s)
+			newSubs = append(newSubs, s)
 		}
 	}
-	sm.subscriptions[channel] = append(cleaned, sub)
+	sm.subscriptions[channel] = append(newSubs, sub)
 }
 
 // removeSubscriptionFromMap removes a subscription from the global subscriptions map.

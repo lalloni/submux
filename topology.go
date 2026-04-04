@@ -107,8 +107,8 @@ func (ts *topologyState) selectNodeForHashslot(hashslot int, preference NodePref
 	case PreferReplicas:
 		// Prefer replicas, fall back to master if no replicas
 		if len(nodes) > 1 {
-			// Return first replica
-			return nodes[1], true
+			// Randomly select among replicas (indices 1+) for load distribution
+			return nodes[1+rand.Intn(len(nodes)-1)], true
 		}
 		// No replicas, use master
 		return nodes[0], true

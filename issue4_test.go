@@ -226,3 +226,49 @@ func TestIssue4_FindAffectedSubscriptionsFiltersDeadSubs(t *testing.T) {
 		t.Error("expected only active and pending subscriptions in result")
 	}
 }
+
+// TestAddSubscriptionToMapLocked_COW verifies that addSubscriptionToMapLocked uses
+// copy-on-write to avoid mutating the backing array of old slice references.
+// This is critical for correctness when concurrent readers have captured slice
+// references before acquiring locks.
+func TestAddSubscriptionToMapLocked_COW(t *testing.T) {
+	sm := &SubMux{
+		subscriptions: make(map[string][]*subscription),
+	}
+
+	sub1 := &subscription{channel: "ch", state: subStateActive}
+	sub2 := &subscription{channel: "ch", state: subStateActive}
+	// Create with capacity > 2 so that existing[:0] would allow array reuse
+	sl := make([]*subscription, 2, 5)
+	sl[0] = sub1
+	sl[1] = sub2
+	sm.subscriptions["ch"] = sl
+
+	// Capture reference to old slice (simulating a reader that held the reference
+	// before the lock was acquired)
+	oldSlice := sm.subscriptions["ch"]
+	oldPtr := &oldSlice[0]
+
+	// Add a new subscription
+	sub3 := &subscription{channel: "ch", state: subStateActive}
+	sm.mu.Lock()
+	sm.addSubscriptionToMapLocked("ch", sub3)
+	sm.mu.Unlock()
+
+	newSlice := sm.subscriptions["ch"]
+	newPtr := &newSlice[0]
+
+	// With buggy implementation using existing[:0], the backing arrays would be
+	// identical. The fix must allocate a new array to avoid corruption.
+	if oldPtr == newPtr {
+		t.Fatal("old and new slices share the same backing array - COW not implemented!")
+	}
+
+	// Verify the new slice has the expected contents
+	if len(newSlice) != 3 {
+		t.Errorf("new slice wrong len: %d, want 3", len(newSlice))
+	}
+	if newSlice[2] != sub3 {
+		t.Error("new subscription not appended correctly")
+	}
+}
